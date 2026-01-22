@@ -26,6 +26,7 @@ COLOR_TEXT_WHITE = "#FFFFFF"
 COLOR_TEXT_GRAY = "#888888"
 COLOR_SUCCESS = "#2ECC71"
 COLOR_MOVING = "#F1C40F"   # 移动中
+COLOR_PAUSED = "#7f8c8d"   # 避让中
 COLOR_ERROR = "#FF4757"
 
 # 拖拽支持
@@ -52,11 +53,12 @@ def get_free_ram_gb():
         return stat.ullAvailPhys / (1024**3)
     except: return 16.0
 
-def set_high_priority():
+def set_below_normal_priority():
+    """优先级：低于正常 (不卡 KeyShot)"""
     try:
         pid = os.getpid()
         handle = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, pid)
-        ctypes.windll.kernel32.SetPriorityClass(handle, 0x00008000) 
+        ctypes.windll.kernel32.SetPriorityClass(handle, 0x00004000) 
     except: pass
 
 def check_ffmpeg():
@@ -193,9 +195,9 @@ class TaskCard(ctk.CTkFrame):
 class UltraEncoderApp(DnDWindow):
     def __init__(self):
         super().__init__()
-        set_high_priority()
+        set_below_normal_priority() 
         
-        self.title("Ultra Encoder v22 - Final UI")
+        self.title("Ultra Encoder v26 - IO Intelligent")
         self.geometry("1300x850")
         self.configure(fg_color=COLOR_BG_MAIN)
         self.minsize(1200, 800) 
@@ -209,6 +211,10 @@ class UltraEncoderApp(DnDWindow):
         
         self.queue_lock = threading.Lock() 
         self.slot_lock = threading.Lock()
+        
+        # IO 互斥锁相关
+        self.io_lock = threading.Lock()
+        self.active_moves = 0 # 正在进行的文件移动数量
         
         self.monitor_slots = []
         self.available_indices = []
@@ -265,7 +271,7 @@ class UltraEncoderApp(DnDWindow):
         ctk.CTkButton(tools, text="清空", width=60, height=36, corner_radius=18, 
                      fg_color="transparent", border_width=1, border_color="#444", hover_color="#331111", text_color="#CCC", command=self.clear_all).pack(side="left", padx=5)
 
-        # 参数区 (Bottom)
+        # 参数区
         l_btm = ctk.CTkFrame(left, fg_color="#222", corner_radius=20)
         l_btm.pack(side="bottom", fill="x", padx=15, pady=20, ipadx=5, ipady=5)
         
@@ -303,28 +309,23 @@ class UltraEncoderApp(DnDWindow):
         ctk.CTkSwitch(g_box, text="RTX 4080", variable=self.gpu_var, font=("Arial", 11, "bold"), progress_color=COLOR_ACCENT).pack(anchor="e", pady=(5,0))
         ctk.CTkLabel(g_box, text="NVENC 硬件加速", font=("微软雅黑", 10), text_color="#666").pack(anchor="e")
 
-        # 5. 按钮调换位置
         btn_row = ctk.CTkFrame(left, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", padx=20, pady=(0, 20))
         
-        # 启动在左 (Main)
         self.btn_run = ctk.CTkButton(btn_row, text="启动引擎", height=45, corner_radius=22, 
                                    font=("微软雅黑", 15, "bold"), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, 
                                    text_color="#000", command=self.run)
-        self.btn_run.pack(side="left", fill="x", expand=True, padx=(0, 10)) # 加右边距
+        self.btn_run.pack(side="left", fill="x", expand=True, padx=(0, 10)) 
         
-        # 停止在右 (Secondary)
         self.btn_stop = ctk.CTkButton(btn_row, text="停止", height=45, corner_radius=22, width=80,
                                     fg_color="transparent", border_width=2, border_color=COLOR_ERROR, 
                                     text_color=COLOR_ERROR, hover_color="#221111", 
                                     state="disabled", command=self.stop)
         self.btn_stop.pack(side="right")
 
-        # 列表
         self.scroll = ctk.CTkScrollableFrame(left, fg_color="transparent")
         self.scroll.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # === 右侧 ===
         right = ctk.CTkFrame(self, fg_color=COLOR_PANEL_RIGHT, corner_radius=0)
         right.grid(row=0, column=1, sticky="nsew")
         
@@ -375,30 +376,60 @@ class UltraEncoderApp(DnDWindow):
         self.task_widgets.clear()
         self.file_queue.clear()
 
+    # === 核心修正：IO互斥预读 ===
     def preload_worker(self):
         while True:
             if self.running and not self.stop_flag:
+                # 1. 检查 IO 锁
+                is_busy = False
+                with self.io_lock:
+                    is_busy = (self.active_moves > 0)
+                
+                # 2. 如果正在写入硬盘，暂停预读，显示避让状态
+                if is_busy:
+                    # 尝试找到正在预读的那个任务，把状态改为避让
+                    with self.queue_lock:
+                        for f in self.file_queue:
+                            w = self.task_widgets.get(f)
+                            if w and w.status_code == 0:
+                                # 只是临时改文字，不改状态码，下次循环继续
+                                self.after(0, lambda w=w: w.lbl_status.configure(text="⏸️ 避让写入", text_color=COLOR_PAUSED))
+                                break
+                    time.sleep(1) # 休息1秒再看
+                    continue
+
                 if get_free_ram_gb() < 8.0: 
                     time.sleep(2); continue
                 
-                target = None
+                target_file = None
+                target_widget = None
+                
                 with self.queue_lock: 
                     for f in self.file_queue:
                         w = self.task_widgets.get(f)
                         if w and w.status_code == 0:
-                            target = f
+                            target_file = f
+                            target_widget = w
                             break 
                 
-                if target:
-                    w = self.task_widgets[target]
-                    self.after(0, lambda: w.set_status("预读中...", COLOR_ACCENT, 0))
+                if target_file and target_widget:
+                    self.after(0, lambda: target_widget.set_status("预读中...", COLOR_ACCENT, 0))
                     try:
-                        sz = os.path.getsize(target)
+                        sz = os.path.getsize(target_file)
                         if sz > 50*1024*1024:
-                            with open(target, 'rb') as f:
+                            with open(target_file, 'rb') as f:
                                 while chunk := f.read(32*1024*1024):
-                                    if self.stop_flag: return
-                        self.after(0, lambda: w.set_status("就绪 (RAM)", COLOR_SUCCESS, 0))
+                                    # 再次检查 IO 锁 和 状态
+                                    current_busy = False
+                                    with self.io_lock: current_busy = (self.active_moves > 0)
+                                    
+                                    if self.stop_flag or target_widget.status_code != 0 or current_busy: 
+                                        break
+                        
+                        # 只有还没被拿走，且没有被打断，才算 Ready
+                        with self.io_lock: current_busy = (self.active_moves > 0)
+                        if target_widget.status_code == 0 and not current_busy:
+                            self.after(0, lambda: target_widget.set_status("就绪 (RAM)", COLOR_SUCCESS, 0))
                     except: pass
             else: time.sleep(1)
 
@@ -452,7 +483,7 @@ class UltraEncoderApp(DnDWindow):
                     if card.status_code == 0: 
                         all_done = False
                         tasks_to_run.append(f)
-                    elif card.status_code == 1: 
+                    elif card.status_code == 1 or card.status_code == 3: 
                         all_done = False
             
             if all_done and not tasks_to_run:
@@ -490,9 +521,14 @@ class UltraEncoderApp(DnDWindow):
             card.configure(fg_color="#383838")
         except: pass
 
+    # === 核心：IO 互斥写入 ===
     def move_worker(self, temp_out, final_out, card, original_size, ch_ui, slot_idx):
+        # 1. 注册 IO 占用
+        with self.io_lock:
+            self.active_moves += 1
+            
         try:
-            self.after(0, lambda: card.set_status("📦 移动中...", COLOR_MOVING, 1))
+            self.after(0, lambda: card.set_status("📦 移动中 (独占IO)", COLOR_MOVING, 3))
             shutil.move(temp_out, final_out)
             
             if temp_out in self.temp_files: self.temp_files.remove(temp_out)
@@ -501,10 +537,16 @@ class UltraEncoderApp(DnDWindow):
             sv = 100 - (new_size/original_size*100)
             status_txt = f"完成 | 压缩比: {sv:.1f}%"
             
-            self.after(0, lambda: [card.set_status(status_txt, COLOR_SUCCESS, 2), card.set_progress(1)])
+            if not self.stop_flag:
+                self.after(0, lambda: [card.set_status(status_txt, COLOR_SUCCESS, 2), card.set_progress(1)])
         except Exception as e:
-            self.after(0, lambda: card.set_status("移动失败", COLOR_ERROR, -1))
-            print(f"Move Error: {e}")
+            if not self.stop_flag:
+                self.after(0, lambda: card.set_status("移动失败", COLOR_ERROR, -1))
+                print(f"Move Error: {e}")
+        finally:
+            # 2. 释放 IO 占用
+            with self.io_lock:
+                self.active_moves -= 1
 
     def process(self, input_file):
         if self.stop_flag: return
