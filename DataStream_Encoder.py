@@ -25,7 +25,7 @@ COLOR_CHART_LINE = "#00E676"
 COLOR_TEXT_WHITE = "#FFFFFF"
 COLOR_TEXT_GRAY = "#888888"
 COLOR_SUCCESS = "#2ECC71"
-COLOR_MOVING = "#F1C40F"   # 移动中：金黄色
+COLOR_MOVING = "#F1C40F"   # 移动中
 COLOR_ERROR = "#FF4757"
 
 # 拖拽支持
@@ -195,7 +195,7 @@ class UltraEncoderApp(DnDWindow):
         super().__init__()
         set_high_priority()
         
-        self.title("Ultra Encoder v21 - Pipeline Ultimate")
+        self.title("Ultra Encoder v22 - Final UI")
         self.geometry("1300x850")
         self.configure(fg_color=COLOR_BG_MAIN)
         self.minsize(1200, 800) 
@@ -207,7 +207,6 @@ class UltraEncoderApp(DnDWindow):
         self.running = False
         self.stop_flag = False
         
-        # 锁机制
         self.queue_lock = threading.Lock() 
         self.slot_lock = threading.Lock()
         
@@ -242,15 +241,14 @@ class UltraEncoderApp(DnDWindow):
         self.lbl_global_status.configure(text=f"状态: {text}")
 
     def setup_ui(self):
-        # 1. 强制锁定左侧宽度 (minsize=320)
         self.grid_columnconfigure(0, weight=0, minsize=320) 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # === 左侧 (固定宽度，禁止压缩) ===
+        # === 左侧 ===
         left = ctk.CTkFrame(self, fg_color=COLOR_PANEL_LEFT, corner_radius=0, width=320)
         left.grid(row=0, column=0, sticky="nsew")
-        left.pack_propagate(False) # 关键：防止被子组件撑开或压缩
+        left.pack_propagate(False)
         
         l_head = ctk.CTkFrame(left, fg_color="transparent")
         l_head.pack(fill="x", padx=20, pady=(25, 10))
@@ -267,11 +265,10 @@ class UltraEncoderApp(DnDWindow):
         ctk.CTkButton(tools, text="清空", width=60, height=36, corner_radius=18, 
                      fg_color="transparent", border_width=1, border_color="#444", hover_color="#331111", text_color="#CCC", command=self.clear_all).pack(side="left", padx=5)
 
-        # 参数区
+        # 参数区 (Bottom)
         l_btm = ctk.CTkFrame(left, fg_color="#222", corner_radius=20)
         l_btm.pack(side="bottom", fill="x", padx=15, pady=20, ipadx=5, ipady=5)
         
-        # 编码格式
         row1 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row1.pack(fill="x", pady=(15, 5), padx=10)
         ctk.CTkLabel(row1, text="编码格式", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
@@ -280,7 +277,6 @@ class UltraEncoderApp(DnDWindow):
         self.seg_codec.pack(fill="x", pady=(5, 0))
         ctk.CTkLabel(row1, text="H.264: 最佳兼容性 | H.265: 最小体积", font=("微软雅黑", 10), text_color="#666").pack(anchor="w")
         
-        # 画质
         row2 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row2.pack(fill="x", pady=10, padx=10)
         ctk.CTkLabel(row2, text="画质 (CRF)", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
@@ -291,7 +287,6 @@ class UltraEncoderApp(DnDWindow):
         ctk.CTkLabel(c_box, textvariable=self.crf_var, width=25, font=("Arial", 12, "bold"), text_color=COLOR_ACCENT).pack(side="right")
         ctk.CTkLabel(row2, text="数值越小画质越高 (推荐 18-24)", font=("微软雅黑", 10), text_color="#666").pack(anchor="w")
         
-        # 硬件
         row3 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row3.pack(fill="x", pady=(10, 20), padx=10)
         w_box = ctk.CTkFrame(row3, fg_color="transparent")
@@ -308,22 +303,24 @@ class UltraEncoderApp(DnDWindow):
         ctk.CTkSwitch(g_box, text="RTX 4080", variable=self.gpu_var, font=("Arial", 11, "bold"), progress_color=COLOR_ACCENT).pack(anchor="e", pady=(5,0))
         ctk.CTkLabel(g_box, text="NVENC 硬件加速", font=("微软雅黑", 10), text_color="#666").pack(anchor="e")
 
-        # 5. 按钮并排布局
+        # 5. 按钮调换位置
         btn_row = ctk.CTkFrame(left, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", padx=20, pady=(0, 20))
         
+        # 启动在左 (Main)
+        self.btn_run = ctk.CTkButton(btn_row, text="启动引擎", height=45, corner_radius=22, 
+                                   font=("微软雅黑", 15, "bold"), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, 
+                                   text_color="#000", command=self.run)
+        self.btn_run.pack(side="left", fill="x", expand=True, padx=(0, 10)) # 加右边距
+        
+        # 停止在右 (Secondary)
         self.btn_stop = ctk.CTkButton(btn_row, text="停止", height=45, corner_radius=22, width=80,
                                     fg_color="transparent", border_width=2, border_color=COLOR_ERROR, 
                                     text_color=COLOR_ERROR, hover_color="#221111", 
                                     state="disabled", command=self.stop)
-        self.btn_stop.pack(side="left", padx=(0, 10))
-        
-        self.btn_run = ctk.CTkButton(btn_row, text="启动引擎", height=45, corner_radius=22, 
-                                   font=("微软雅黑", 15, "bold"), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, 
-                                   text_color="#000", command=self.run)
-        self.btn_run.pack(side="right", fill="x", expand=True)
+        self.btn_stop.pack(side="right")
 
-        # 中间列表
+        # 列表
         self.scroll = ctk.CTkScrollableFrame(left, fg_color="transparent")
         self.scroll.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -364,7 +361,7 @@ class UltraEncoderApp(DnDWindow):
     def drop_file(self, event): self.add_list(self.tk.splitlist(event.data))
     
     def add_list(self, files):
-        with self.queue_lock: # 加锁防止Bug
+        with self.queue_lock: 
             for f in files:
                 if f not in self.file_queue and f.lower().endswith(('.mp4', '.mkv', '.mov', '.avi')):
                     self.file_queue.append(f)
@@ -378,7 +375,6 @@ class UltraEncoderApp(DnDWindow):
         self.task_widgets.clear()
         self.file_queue.clear()
 
-    # 2. 预读逻辑修复：严格顺序检测
     def preload_worker(self):
         while True:
             if self.running and not self.stop_flag:
@@ -389,9 +385,9 @@ class UltraEncoderApp(DnDWindow):
                 with self.queue_lock: 
                     for f in self.file_queue:
                         w = self.task_widgets.get(f)
-                        if w and w.status_code == 0: # 找到第一个 waiting
+                        if w and w.status_code == 0:
                             target = f
-                            break # 立刻停止扫描，确保只预读最前面的
+                            break 
                 
                 if target:
                     w = self.task_widgets[target]
@@ -494,12 +490,9 @@ class UltraEncoderApp(DnDWindow):
             card.configure(fg_color="#383838")
         except: pass
 
-    # 1. 流水线核心：独立的移动线程
     def move_worker(self, temp_out, final_out, card, original_size, ch_ui, slot_idx):
         try:
-            # 状态设为移动中
             self.after(0, lambda: card.set_status("📦 移动中...", COLOR_MOVING, 1))
-            
             shutil.move(temp_out, final_out)
             
             if temp_out in self.temp_files: self.temp_files.remove(temp_out)
@@ -603,14 +596,12 @@ class UltraEncoderApp(DnDWindow):
             print(e)
             self.after(0, lambda: card.set_status("错误", COLOR_ERROR, -1))
         
-        # 1. 关键优化：压制一结束，立刻释放 UI 通道和显卡槽位
         self.after(0, ch_ui.reset)
         with self.slot_lock:
             self.available_indices.append(my_slot_idx)
             self.available_indices.sort()
         
         if success:
-            # 开启后台搬运工，完全不占用显卡时间
             orig_size = os.path.getsize(input_file)
             threading.Thread(target=self.move_worker, args=(temp_out, final_out, card, orig_size, ch_ui, my_slot_idx)).start()
             
