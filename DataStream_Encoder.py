@@ -223,7 +223,7 @@ class TaskCard(ctk.CTkFrame):
 class UltraEncoderApp(DnDWindow):
     def __init__(self):
         super().__init__()
-        self.title("Ultra Encoder v37 - AutoStop Fix")
+        self.title("Ultra Encoder v40 - Strict Order")
         self.geometry("1300x900")
         self.configure(fg_color=COLOR_BG_MAIN)
         self.minsize(1200, 850) 
@@ -330,7 +330,7 @@ class UltraEncoderApp(DnDWindow):
         tools.pack(fill="x", padx=15, pady=5)
         ctk.CTkButton(tools, text="+ 导入", width=120, height=36, corner_radius=18, 
                      fg_color="#333", hover_color="#444", command=self.add_file).pack(side="left", padx=5)
-        # 清空按钮
+        
         self.btn_clear = ctk.CTkButton(tools, text="清空", width=60, height=36, corner_radius=18, 
                      fg_color="transparent", border_width=1, border_color="#444", hover_color="#331111", text_color="#CCC", command=self.clear_all)
         self.btn_clear.pack(side="left", padx=5)
@@ -427,14 +427,12 @@ class UltraEncoderApp(DnDWindow):
                 if get_free_ram_gb() < 8.0: 
                     time.sleep(2); continue
                 
-                # 策略：如果工人没满，不预读，让工人优先
-                running_tasks = 0
-                with self.queue_lock:
-                    for f in self.file_queue:
-                        if self.task_widgets[f].status_code == STATUS_RUN:
-                            running_tasks += 1
+                # [策略调整] 
+                # 预读器也必须遵守 submitted_tasks 的计数逻辑
+                # 如果活跃任务数 < 并发数，说明有空位，让工人直接去抢，不要预读
+                active_workers = len(self.submitted_tasks)
                 
-                if running_tasks < self.current_workers:
+                if active_workers < self.current_workers:
                     time.sleep(0.5); continue
 
                 if not self.read_lock.acquire(blocking=False):
@@ -443,6 +441,9 @@ class UltraEncoderApp(DnDWindow):
                 target_file, target_widget = None, None
                 with self.queue_lock: 
                     for f in self.file_queue:
+                        # [关键] 绝对不能碰已经提交给线程池的任务
+                        if f in self.submitted_tasks: continue
+                        
                         w = self.task_widgets.get(f)
                         if w and w.status_code == STATUS_WAIT:
                             target_file, target_widget = f, w
@@ -458,6 +459,7 @@ class UltraEncoderApp(DnDWindow):
                             while chunk := f.read(32*1024*1024): 
                                 rb += len(chunk)
                                 self.after(0, lambda p=rb/sz, w=target_widget: w.set_progress(p, COLOR_READING) if w.winfo_exists() else None)
+                                # 再次检查如果被提交了，就不要预读了（其实已经被 submitted_tasks 保护了，这里为了双保险）
                                 if self.stop_flag or target_widget.status_code != STATUS_READ or self.active_moves > 0: break
                         if rb >= sz: success = True
                     except: pass
@@ -475,30 +477,32 @@ class UltraEncoderApp(DnDWindow):
     def engine(self):
         while not self.stop_flag:
             tasks_to_run = []
-            running_cnt = 0
             
-            with self.queue_lock:
-                for f in self.file_queue:
-                    st = self.task_widgets[f].status_code
-                    if st in [STATUS_RUN, STATUS_MOVE]:
-                        running_cnt += 1
-            
-            slots_free = self.current_workers - running_cnt
+            # [核心修复 v40] 
+            # 统计活跃任务不再看 STATUS_RUN，而是看 submitted_tasks 集合的大小。
+            # 只要提交了（不管是在排队、等待RAM、还是正在压制），都算占用了一个工位。
+            # 这强制了严格的顺序，防止后来的任务插队。
+            active_count = len(self.submitted_tasks)
+            slots_free = self.current_workers - active_count
             
             # 分发任务
             if slots_free > 0:
                 with self.queue_lock:
                     for f in self.file_queue:
                         if slots_free <= 0: break
+                        
+                        # 已经提交的跳过
                         if f in self.submitted_tasks: continue 
+                        
                         card = self.task_widgets[f]
+                        # 只要还没完成，就提交
                         if card.status_code in [STATUS_WAIT, STATUS_READ, STATUS_READY]:
                             tasks_to_run.append(f)
-                            self.submitted_tasks.add(f)
-                            slots_free -= 1
+                            self.submitted_tasks.add(f) # 立即标记为已占用
+                            slots_free -= 1 # 立即扣减工位
             
-            # [Fix 2] 检查是否全部完成 (队列非空 + 无运行中任务 + 没东西可跑)
-            if not tasks_to_run and running_cnt == 0 and self.file_queue:
+            # 检查是否全部完成 (队列非空 + 无运行中任务 + 没东西可跑)
+            if not tasks_to_run and active_count == 0 and self.file_queue:
                 all_done = True
                 with self.queue_lock:
                     for f in self.file_queue:
@@ -506,8 +510,7 @@ class UltraEncoderApp(DnDWindow):
                             all_done = False
                             break
                 if all_done:
-                    # 所有任务都搞定了，自动跳出循环
-                    break
+                    break # 自动结束
             
             if not tasks_to_run:
                 time.sleep(0.2); continue
@@ -517,7 +520,6 @@ class UltraEncoderApp(DnDWindow):
             
             time.sleep(0.1) 
 
-        # 循环结束（手动停止或自动完成）
         if not self.stop_flag:
             self.after(0, lambda: messagebox.showinfo("完成", "队列已全部搞定！"))
         
@@ -534,13 +536,18 @@ class UltraEncoderApp(DnDWindow):
         if self.stop_flag: return
 
         card = self.task_widgets[input_file]
+        
+        # 即使被提交了，如果还在预读，就等等它
         while card.status_code == STATUS_READ and not self.stop_flag: time.sleep(0.5)
         
         was_ready = (card.status_code == STATUS_READY)
         lock_acquired = False
         if not was_ready:
+            # 如果没预读，需要去抢读盘锁
             self.read_lock.acquire()
             lock_acquired = True
+            # 给个UI提示，告诉用户为什么在发呆
+            self.after(0, lambda: card.set_status("⏳ 准备中...", COLOR_PAUSED))
         
         try:
             if self.stop_flag: return
@@ -609,7 +616,9 @@ class UltraEncoderApp(DnDWindow):
                 threading.Thread(target=self.move_worker, args=(temp_out, final_out, card, os.path.getsize(input_file))).start()
         finally:
             if lock_acquired and self.read_lock.locked(): self.read_lock.release()
-            if input_file in self.submitted_tasks: self.submitted_tasks.remove(input_file)
+            # [关键] 只有当处理彻底完成（或出错退出）时，才释放“占用名额”，允许下一个任务进来
+            with self.queue_lock:
+                if input_file in self.submitted_tasks: self.submitted_tasks.remove(input_file)
 
     def run(self):
         if not self.file_queue: return
@@ -658,13 +667,10 @@ class UltraEncoderApp(DnDWindow):
         self.add_list(f_list)
 
     def clear_all(self):
-        # 如果正在运行，询问是否停止并清空
         if self.running:
             if not messagebox.askyesno("警告", "队列正在运行，确定要停止并清空吗？"):
                 return
             self.stop()
-        
-        # 稍作延时确保线程标志位已更新（虽非必须，但更稳妥）
         self.after(100, self._do_clear)
 
     def _do_clear(self):
