@@ -24,11 +24,11 @@ COLOR_ACCENT_HOVER = "#36719f"
 COLOR_CHART_LINE = "#00E676"
 COLOR_TEXT_WHITE = "#FFFFFF"
 COLOR_TEXT_GRAY = "#888888"
-COLOR_SUCCESS = "#2ECC71" 
-COLOR_MOVING = "#F1C40F"  
-COLOR_READING = "#9B59B6" 
-COLOR_PAUSED = "#7f8c8d"  
-COLOR_ERROR = "#FF4757"   
+COLOR_SUCCESS = "#2ECC71" # 绿色 (就绪/完成)
+COLOR_MOVING = "#F1C40F"  # 金色 (移动)
+COLOR_READING = "#9B59B6" # 紫色 (预读)
+COLOR_PAUSED = "#7f8c8d"  # 灰色 (避让)
+COLOR_ERROR = "#FF4757"   # 红色
 
 # 状态码
 STATUS_WAIT = 0
@@ -88,7 +88,7 @@ def get_force_ssd_dir():
     os.makedirs(path, exist_ok=True)
     return path
 
-# === UI组件 ===
+# === 组件 ===
 class InfinityScope(ctk.CTkCanvas):
     def __init__(self, master, **kwargs):
         super().__init__(master, bg=COLOR_PANEL_RIGHT, highlightthickness=0, **kwargs)
@@ -193,14 +193,12 @@ class TaskCard(ctk.CTkFrame):
 class UltraEncoderApp(DnDWindow):
     def __init__(self):
         super().__init__()
-        
-        self.title("Ultra Encoder v36 - Fixed Architecture")
+        self.title("Ultra Encoder v37 - Perfect Sync")
         self.geometry("1300x900")
         self.configure(fg_color=COLOR_BG_MAIN)
         self.minsize(1200, 850) 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        # 核心数据
         self.file_queue = [] 
         self.task_widgets = {}
         self.active_procs = []
@@ -208,7 +206,6 @@ class UltraEncoderApp(DnDWindow):
         self.running = False
         self.stop_flag = False
         
-        # 锁
         self.queue_lock = threading.Lock() 
         self.slot_lock = threading.Lock()
         self.io_lock = threading.Lock() 
@@ -220,8 +217,9 @@ class UltraEncoderApp(DnDWindow):
         self.current_workers = 2
         self.temp_dir = ""
         
-        # 【核心修复】全局线程池，不再循环创建
-        self.executor = ThreadPoolExecutor(max_workers=4) 
+        # 线程池设大一点，防止被 waiting 的线程占满
+        self.executor = ThreadPoolExecutor(max_workers=16) 
+        self.submitted_tasks = set() # 防止重复提交
         
         self.setup_ui()
         self.after(200, self.sys_check)
@@ -259,7 +257,7 @@ class UltraEncoderApp(DnDWindow):
             if not messagebox.askokcancel("退出", "任务正在进行中，确定要退出？"): return
         self.stop_flag = True
         self.running = False
-        self.executor.shutdown(wait=False) # 立即关闭线程池
+        self.executor.shutdown(wait=False)
         for p in self.active_procs:
             try: p.terminate(); p.kill()
             except: pass
@@ -389,6 +387,7 @@ class UltraEncoderApp(DnDWindow):
     def preload_worker(self):
         while True:
             if self.running and not self.stop_flag:
+                # 1. IO避让
                 if self.active_moves > 0:
                     with self.queue_lock:
                         for f in self.file_queue:
@@ -401,6 +400,7 @@ class UltraEncoderApp(DnDWindow):
                 if get_free_ram_gb() < 8.0: 
                     time.sleep(2); continue
                 
+                # 2. 申请读取锁 (抢不过主线程)
                 if not self.read_lock.acquire(blocking=False):
                     time.sleep(0.5); continue
                 try:
@@ -417,7 +417,6 @@ class UltraEncoderApp(DnDWindow):
                         try:
                             sz = os.path.getsize(target_file)
                             rb = 0
-                            # 读取并利用系统缓存，不保存内容
                             with open(target_file, 'rb') as f:
                                 while chunk := f.read(32*1024*1024): 
                                     rb += len(chunk)
@@ -426,35 +425,48 @@ class UltraEncoderApp(DnDWindow):
                             if rb >= sz: success = True
                         except: pass
                         
-                        if success and target_widget and target_widget.winfo_exists() and target_widget.status_code == STATUS_READ and self.active_moves == 0:
+                        if success and target_widget and target_widget.winfo_exists() and target_widget.status_code == STATUS_READ:
                             self.after(0, lambda w=target_widget: [w.set_status("就绪 (RAM)", COLOR_SUCCESS, STATUS_READY), w.set_progress(1, COLOR_SUCCESS)] if w.winfo_exists() else None)
                         elif target_widget and target_widget.winfo_exists() and target_widget.status_code == STATUS_READ:
                             self.after(0, lambda w=target_widget: [w.set_status("等待处理", COLOR_TEXT_GRAY, STATUS_WAIT), w.set_progress(0, COLOR_ACCENT)] if w.winfo_exists() else None)
                 finally:
                     self.read_lock.release()
+                    time.sleep(0.5) # [核心修复] 读完一个必须强制休息，让压制线程有机会抢锁
             else: time.sleep(1)
 
-    # === [关键修复] Engine 不再阻塞等待结果 ===
     def engine(self):
         while not self.stop_flag:
             tasks_to_run = []
+            
+            # 统计真正占坑的任务
+            running_cnt = 0
             with self.queue_lock:
-                running_cnt = sum(1 for f in self.file_queue if self.task_widgets[f].status_code in [STATUS_RUN, STATUS_MOVE])
-                slots_free = self.current_workers - running_cnt
-                if slots_free > 0:
+                for f in self.file_queue:
+                    # 注意：READ 其实不占 worker 坑，只有 RUN 和 MOVE 占
+                    if self.task_widgets[f].status_code in [STATUS_RUN, STATUS_MOVE]:
+                        running_cnt += 1
+            
+            slots_free = self.current_workers - running_cnt
+            
+            if slots_free > 0:
+                with self.queue_lock:
                     for f in self.file_queue:
                         if slots_free <= 0: break
-                        if self.task_widgets[f].status_code in [STATUS_WAIT, STATUS_READ, STATUS_READY]:
+                        if f in self.submitted_tasks: continue # 防止重复提交
+                        
+                        card = self.task_widgets[f]
+                        if card.status_code in [STATUS_WAIT, STATUS_READ, STATUS_READY]:
                             tasks_to_run.append(f)
+                            self.submitted_tasks.add(f)
                             slots_free -= 1
-            if not tasks_to_run:
-                time.sleep(0.5); continue
             
-            # 异步提交任务，不等待结果
+            if not tasks_to_run:
+                time.sleep(0.2); continue
+            
             for f in tasks_to_run:
                 self.executor.submit(self.process, f)
             
-            time.sleep(0.1) # 短暂休息防止空转过快
+            time.sleep(0.1) 
 
         if not self.stop_flag:
             self.after(0, lambda: messagebox.showinfo("完成", "队列已全部搞定！"))
@@ -471,18 +483,25 @@ class UltraEncoderApp(DnDWindow):
         if self.stop_flag: return
 
         card = self.task_widgets[input_file]
-        is_ready = (card.status_code == STATUS_READY)
         
-        # [关键修复] 锁逻辑重写：使用标志位确保只释放一次
+        # [逻辑核心] 智能等待
+        # 如果是 READY: 直接跑
+        # 如果是 WAIT: 抢锁读
+        # 如果是 READ: 等它变 READY
+        
+        while card.status_code == STATUS_READ and not self.stop_flag:
+            time.sleep(0.5) # 等预读线程干完
+        
+        was_ready = (card.status_code == STATUS_READY)
         lock_acquired = False
-        if not is_ready: 
+        
+        if not was_ready:
             self.read_lock.acquire()
             lock_acquired = True
         
         try:
-            if card.status_code in [STATUS_DONE, STATUS_MOVE]: 
-                with self.slot_lock: self.available_indices.append(my_slot_idx); self.available_indices.sort()
-                return
+            # 再次检查，可能等待期间被取消了
+            if self.stop_flag: return
 
             ch_ui = self.monitor_slots[my_slot_idx]
             self.after(0, lambda: [card.set_status("▶️ 压制中...", COLOR_ACCENT, STATUS_RUN), card.set_progress(0, COLOR_ACCENT)])
@@ -509,7 +528,7 @@ class UltraEncoderApp(DnDWindow):
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='ignore', startupinfo=si)
                 self.active_procs.append(proc)
                 
-                # 延时释放读锁
+                # 如果是自己读的，延时释放锁
                 if lock_acquired: 
                     time.sleep(3)
                     self.read_lock.release()
@@ -541,9 +560,11 @@ class UltraEncoderApp(DnDWindow):
             if success:
                 threading.Thread(target=self.move_worker, args=(temp_out, final_out, card, os.path.getsize(input_file))).start()
         finally:
-            # 最终保障：如果锁还没释放，这里释放
             if lock_acquired and self.read_lock.locked():
                 self.read_lock.release()
+            # 无论成功失败，都要从提交列表中移除，允许重试
+            if input_file in self.submitted_tasks:
+                self.submitted_tasks.remove(input_file)
 
     def run(self):
         if not self.file_queue: return
@@ -564,6 +585,7 @@ class UltraEncoderApp(DnDWindow):
                 if card.status_code in [STATUS_RUN, STATUS_READ, STATUS_MOVE]:
                     card.set_status("已停止", COLOR_TEXT_GRAY, STATUS_WAIT)
                     card.set_progress(0)
+        self.submitted_tasks.clear()
         self.running = False
         self.reset_ui_state()
 
@@ -572,9 +594,7 @@ class UltraEncoderApp(DnDWindow):
         try:
             self.after(0, lambda: [card.set_status("📦 移动中...", COLOR_MOVING, STATUS_MOVE), card.set_progress(0, COLOR_MOVING)])
             shutil.move(temp_out, final_out)
-            # [关键修复] 移动成功后，移除 temp_files
             if temp_out in self.temp_files: self.temp_files.remove(temp_out)
-            
             new_sz = os.path.getsize(final_out)
             sv = 100 - (new_sz/orig_sz*100)
             if not self.stop_flag: self.after(0, lambda: [card.set_status(f"完成 | 压缩比: {sv:.1f}%", COLOR_SUCCESS, STATUS_DONE), card.set_progress(1, COLOR_SUCCESS)])
