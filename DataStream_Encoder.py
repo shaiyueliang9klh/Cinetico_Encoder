@@ -84,7 +84,6 @@ def get_force_ssd_dir():
         root = f"{d}:\\"
         if os.path.exists(root):
             try:
-                # 找一个空闲空间大于 20GB 的盘
                 if shutil.disk_usage(root).free > 20*1024**3:
                     best = root
                     break
@@ -104,7 +103,7 @@ class InfinityScope(ctk.CTkCanvas):
         
     def add_point(self, val):
         self.points.append(val)
-        if len(self.points) > 100: self.points.pop(0) # 限制点数防止卡顿
+        if len(self.points) > 100: self.points.pop(0) 
         self.draw()
         
     def clear(self):
@@ -121,13 +120,10 @@ class InfinityScope(ctk.CTkCanvas):
         
         n = len(self.points)
         data_max = max(self.points) if self.points else 10
-        # 动态调整 Y 轴缩放，使曲线平滑
         target_max = max(data_max, 10) * 1.1 
         self.max_val += (target_max - self.max_val) * 0.1 
         
         scale_y = (h - 20) / self.max_val
-        
-        # 中轴线
         self.create_line(0, h/2, w, h/2, fill="#2a2a2a", dash=(4,4))
         
         if n < 2: return
@@ -200,7 +196,6 @@ class TaskCard(ctk.CTkFrame):
         self.status_code = STATUS_WAIT 
         
         ctk.CTkLabel(self, text=f"{index:02d}", font=("Impact", 20), text_color="#555").grid(row=0, column=0, rowspan=2, padx=15)
-        
         ctk.CTkLabel(self, text=os.path.basename(filepath), font=("微软雅黑", 12, "bold"), text_color="#EEE", anchor="w").grid(row=0, column=1, sticky="w", padx=5, pady=(8,0))
         
         self.lbl_status = ctk.CTkLabel(self, text="等待处理", font=("Arial", 10), text_color="#888", anchor="w")
@@ -228,7 +223,7 @@ class TaskCard(ctk.CTkFrame):
 class UltraEncoderApp(DnDWindow):
     def __init__(self):
         super().__init__()
-        self.title("Ultra Encoder v37 - Fixed & Optimized")
+        self.title("Ultra Encoder v37 - AutoStop Fix")
         self.geometry("1300x900")
         self.configure(fg_color=COLOR_BG_MAIN)
         self.minsize(1200, 850) 
@@ -241,7 +236,6 @@ class UltraEncoderApp(DnDWindow):
         self.running = False
         self.stop_flag = False
         
-        # 线程同步锁
         self.queue_lock = threading.Lock() 
         self.slot_lock = threading.Lock()
         self.io_lock = threading.Lock() 
@@ -249,7 +243,7 @@ class UltraEncoderApp(DnDWindow):
         
         self.active_moves = 0 
         self.monitor_slots = []
-        self.available_indices = [] # [Fix 1] 这里是空的，后面要填充
+        self.available_indices = [] 
         self.current_workers = 2
         self.temp_dir = ""
         
@@ -301,12 +295,11 @@ class UltraEncoderApp(DnDWindow):
 
     def sys_check(self):
         if not check_ffmpeg():
-            messagebox.showerror("错误", "找不到 FFmpeg！请确保已安装并配置环境变量。")
+            messagebox.showerror("错误", "找不到 FFmpeg！")
             return
         threading.Thread(target=self.scan_disk, daemon=True).start()
-        # 启动预读线程，但它现在会更智能
         threading.Thread(target=self.preload_worker, daemon=True).start()
-        self.update_monitor_layout() # 初始化槽位
+        self.update_monitor_layout()
 
     def scan_disk(self):
         path = get_force_ssd_dir()
@@ -317,7 +310,6 @@ class UltraEncoderApp(DnDWindow):
         self.lbl_global_status.configure(text=f"状态: {text}")
 
     def setup_ui(self):
-        # ... (保持原有的 UI 代码不变，为了节省篇幅，此处省略细节，但逻辑一致) ...
         self.grid_columnconfigure(0, weight=0, minsize=320) 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -338,8 +330,10 @@ class UltraEncoderApp(DnDWindow):
         tools.pack(fill="x", padx=15, pady=5)
         ctk.CTkButton(tools, text="+ 导入", width=120, height=36, corner_radius=18, 
                      fg_color="#333", hover_color="#444", command=self.add_file).pack(side="left", padx=5)
-        ctk.CTkButton(tools, text="清空", width=60, height=36, corner_radius=18, 
-                     fg_color="transparent", border_width=1, border_color="#444", hover_color="#331111", text_color="#CCC", command=self.clear_all).pack(side="left", padx=5)
+        # 清空按钮
+        self.btn_clear = ctk.CTkButton(tools, text="清空", width=60, height=36, corner_radius=18, 
+                     fg_color="transparent", border_width=1, border_color="#444", hover_color="#331111", text_color="#CCC", command=self.clear_all)
+        self.btn_clear.pack(side="left", padx=5)
 
         l_btm = ctk.CTkFrame(left, fg_color="#222", corner_radius=20)
         l_btm.pack(side="bottom", fill="x", padx=15, pady=20, ipadx=5, ipady=10)
@@ -414,11 +408,9 @@ class UltraEncoderApp(DnDWindow):
         except: n = 2
         self.current_workers = n
         
-        # 清空旧组件
         for ch in self.monitor_slots: ch.destroy()
         self.monitor_slots.clear()
         
-        # [核心修复] 重置并填充可用索引
         with self.slot_lock:
             self.available_indices = [i for i in range(n)] 
         
@@ -427,19 +419,15 @@ class UltraEncoderApp(DnDWindow):
             ch.pack(fill="both", expand=True, pady=5)
             self.monitor_slots.append(ch)
 
-    # === [核心修复] 智能预读逻辑 ===
     def preload_worker(self):
         while True:
             if self.running and not self.stop_flag:
-                # 1. IO避让
                 if self.active_moves > 0:
                     time.sleep(1); continue
-
                 if get_free_ram_gb() < 8.0: 
                     time.sleep(2); continue
                 
-                # 2. [核心策略] 仅当所有工人都在忙碌时，才进行预读
-                # 如果有空闲工人，不要预读，让工人直接去抢任务！
+                # 策略：如果工人没满，不预读，让工人优先
                 running_tasks = 0
                 with self.queue_lock:
                     for f in self.file_queue:
@@ -447,11 +435,8 @@ class UltraEncoderApp(DnDWindow):
                             running_tasks += 1
                 
                 if running_tasks < self.current_workers:
-                    # 工人没满，预读线程休息，把IO让给主压制线程
-                    time.sleep(0.5) 
-                    continue
+                    time.sleep(0.5); continue
 
-                # 3. 执行预读
                 if not self.read_lock.acquire(blocking=False):
                     time.sleep(0.5); continue
                     
@@ -472,8 +457,6 @@ class UltraEncoderApp(DnDWindow):
                         with open(target_file, 'rb') as f:
                             while chunk := f.read(32*1024*1024): 
                                 rb += len(chunk)
-                                # 检查是否有空闲槽位突然出现，如果有，停止预读让位给工人
-                                # 但这里简单起见，既然读了一半就读完吧
                                 self.after(0, lambda p=rb/sz, w=target_widget: w.set_progress(p, COLOR_READING) if w.winfo_exists() else None)
                                 if self.stop_flag or target_widget.status_code != STATUS_READ or self.active_moves > 0: break
                         if rb >= sz: success = True
@@ -482,39 +465,49 @@ class UltraEncoderApp(DnDWindow):
                     if success and target_widget and target_widget.winfo_exists() and target_widget.status_code == STATUS_READ:
                         self.after(0, lambda w=target_widget: [w.set_status("就绪 (RAM)", COLOR_SUCCESS, STATUS_READY), w.set_progress(1, COLOR_SUCCESS)] if w.winfo_exists() else None)
                     elif target_widget and target_widget.winfo_exists() and target_widget.status_code == STATUS_READ:
-                        # 失败回滚
                         self.after(0, lambda w=target_widget: [w.set_status("等待处理", COLOR_TEXT_GRAY, STATUS_WAIT), w.set_progress(0, COLOR_ACCENT)] if w.winfo_exists() else None)
                 
                 self.read_lock.release()
-                time.sleep(1) # 强制冷却
+                time.sleep(1)
             else:
                 time.sleep(1)
 
     def engine(self):
         while not self.stop_flag:
             tasks_to_run = []
-            
             running_cnt = 0
+            
             with self.queue_lock:
                 for f in self.file_queue:
-                    # 只要不是 完成/错误/等待，都算占坑
-                    if self.task_widgets[f].status_code in [STATUS_RUN, STATUS_MOVE]:
+                    st = self.task_widgets[f].status_code
+                    if st in [STATUS_RUN, STATUS_MOVE]:
                         running_cnt += 1
             
             slots_free = self.current_workers - running_cnt
             
+            # 分发任务
             if slots_free > 0:
                 with self.queue_lock:
                     for f in self.file_queue:
                         if slots_free <= 0: break
                         if f in self.submitted_tasks: continue 
-                        
                         card = self.task_widgets[f]
-                        # 只要是没完成的任务，都可以提交
                         if card.status_code in [STATUS_WAIT, STATUS_READ, STATUS_READY]:
                             tasks_to_run.append(f)
                             self.submitted_tasks.add(f)
                             slots_free -= 1
+            
+            # [Fix 2] 检查是否全部完成 (队列非空 + 无运行中任务 + 没东西可跑)
+            if not tasks_to_run and running_cnt == 0 and self.file_queue:
+                all_done = True
+                with self.queue_lock:
+                    for f in self.file_queue:
+                        if self.task_widgets[f].status_code not in [STATUS_DONE, STATUS_ERR]:
+                            all_done = False
+                            break
+                if all_done:
+                    # 所有任务都搞定了，自动跳出循环
+                    break
             
             if not tasks_to_run:
                 time.sleep(0.2); continue
@@ -524,46 +517,33 @@ class UltraEncoderApp(DnDWindow):
             
             time.sleep(0.1) 
 
+        # 循环结束（手动停止或自动完成）
         if not self.stop_flag:
             self.after(0, lambda: messagebox.showinfo("完成", "队列已全部搞定！"))
-            self.running = False
-            self.after(0, self.reset_ui_state)
+        
+        self.running = False
+        self.after(0, self.reset_ui_state)
 
     def process(self, input_file):
         if self.stop_flag: return
-        
-        # 获取显示槽位
         my_slot_idx = None
-        # 等待分配槽位
         while my_slot_idx is None and not self.stop_flag:
             with self.slot_lock:
-                if self.available_indices:
-                    my_slot_idx = self.available_indices.pop(0)
+                if self.available_indices: my_slot_idx = self.available_indices.pop(0)
             if my_slot_idx is None: time.sleep(0.1)
-        
         if self.stop_flag: return
 
         card = self.task_widgets[input_file]
-        
-        # [核心逻辑] 
-        # 如果文件正在被预读线程(STATUS_READ)读取，我们应该接管它或者等待它完成。
-        # 为了简单且不冲突，我们等待它完成变成 READY。
-        # 但因为我们修改了 preload_worker，如果现在工人进来了，preload_worker 应该没在跑这个任务，或者即将结束。
-        while card.status_code == STATUS_READ and not self.stop_flag:
-            time.sleep(0.5)
+        while card.status_code == STATUS_READ and not self.stop_flag: time.sleep(0.5)
         
         was_ready = (card.status_code == STATUS_READY)
         lock_acquired = False
-        
-        # 如果不是 READY (也就是 STATUS_WAIT)，说明没有预读，Worker 直接开干
-        # 此时需要获取 read_lock 防止预读线程捣乱
         if not was_ready:
             self.read_lock.acquire()
             lock_acquired = True
         
         try:
             if self.stop_flag: return
-
             ch_ui = self.monitor_slots[my_slot_idx]
             self.after(0, lambda: [card.set_status("▶️ 压制中...", COLOR_ACCENT, STATUS_RUN), card.set_progress(0, COLOR_ACCENT)])
             
@@ -579,18 +559,13 @@ class UltraEncoderApp(DnDWindow):
             final_out = os.path.join(os.path.dirname(input_file), f"{name}{suffix}{ext}")
             self.temp_files.add(temp_out)
             
-            # 构建命令
             v_codec = "hevc_nvenc" if "H.265" in codec_sel else "h264_nvenc"
-            if not self.gpu_var.get():
-                v_codec = "libx265" if "H.265" in codec_sel else "libx264"
-                
+            if not self.gpu_var.get(): v_codec = "libx265" if "H.265" in codec_sel else "libx264"
             cmd = ["ffmpeg", "-y", "-i", input_file, "-c:v", v_codec]
-            
             if self.gpu_var.get():
                 cmd.extend(["-pix_fmt", "yuv420p", "-rc", "vbr", "-cq", str(self.crf_var.get()), "-preset", "p6", "-spatial-aq", "1"])
             else:
                 cmd.extend(["-crf", str(self.crf_var.get()), "-preset", "medium"])
-                
             cmd.extend(["-c:a", "copy", temp_out])
             
             start_t = time.time()
@@ -599,14 +574,11 @@ class UltraEncoderApp(DnDWindow):
                 duration = self.get_dur(input_file)
                 si = subprocess.STARTUPINFO()
                 si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                
-                # 如果是直接压制（非RAM），这里实际上在读盘
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='ignore', startupinfo=si)
                 self.active_procs.append(proc)
                 
-                # 释放锁，允许预读线程去读 *后面的* 文件
                 if lock_acquired: 
-                    time.sleep(2) # 稍微占一会儿锁让FFmpeg建立缓存
+                    time.sleep(2)
                     self.read_lock.release()
                     lock_acquired = False 
                 
@@ -628,24 +600,16 @@ class UltraEncoderApp(DnDWindow):
                 proc.wait()
                 if proc in self.active_procs: self.active_procs.remove(proc)
                 success = (not self.stop_flag and proc.returncode == 0)
-            except Exception as e:
-                print(e)
+            except:
                 self.after(0, lambda: card.set_status("错误", COLOR_ERROR, STATUS_ERR))
 
             self.after(0, ch_ui.reset)
-            
-            # 归还槽位
-            with self.slot_lock: 
-                self.available_indices.append(my_slot_idx)
-                self.available_indices.sort()
-                
+            with self.slot_lock: self.available_indices.append(my_slot_idx); self.available_indices.sort()
             if success:
                 threading.Thread(target=self.move_worker, args=(temp_out, final_out, card, os.path.getsize(input_file))).start()
         finally:
-            if lock_acquired and self.read_lock.locked():
-                self.read_lock.release()
-            if input_file in self.submitted_tasks:
-                self.submitted_tasks.remove(input_file)
+            if lock_acquired and self.read_lock.locked(): self.read_lock.release()
+            if input_file in self.submitted_tasks: self.submitted_tasks.remove(input_file)
 
     def run(self):
         if not self.file_queue: return
@@ -653,7 +617,7 @@ class UltraEncoderApp(DnDWindow):
         self.stop_flag = False
         self.btn_run.configure(state="disabled", text="运行中...")
         self.btn_stop.configure(state="normal")
-        self.update_monitor_layout() # 确保运行前重置槽位
+        self.update_monitor_layout()
         threading.Thread(target=self.engine, daemon=True).start()
 
     def stop(self):
@@ -687,13 +651,6 @@ class UltraEncoderApp(DnDWindow):
         self.btn_run.configure(state="normal", text="启动引擎")
         self.btn_stop.configure(state="disabled")
 
-    def scroll_to_card(self, card):
-        try:
-            all_widgets = list(self.task_widgets.values())
-            idx = all_widgets.index(card)
-            self.scroll._parent_canvas.yview_moveto(max(0, (idx/len(all_widgets)) - 0.1))
-        except: pass
-
     def open_cache(self):
         if self.temp_dir: os.startfile(self.temp_dir)
     def add_file(self):
@@ -701,9 +658,20 @@ class UltraEncoderApp(DnDWindow):
         self.add_list(f_list)
 
     def clear_all(self):
-        if not self.running:
-            for w in list(self.task_widgets.values()): w.destroy()
-            self.task_widgets.clear(); self.file_queue.clear()
+        # 如果正在运行，询问是否停止并清空
+        if self.running:
+            if not messagebox.askyesno("警告", "队列正在运行，确定要停止并清空吗？"):
+                return
+            self.stop()
+        
+        # 稍作延时确保线程标志位已更新（虽非必须，但更稳妥）
+        self.after(100, self._do_clear)
+
+    def _do_clear(self):
+        for w in list(self.task_widgets.values()): w.destroy()
+        self.task_widgets.clear()
+        self.file_queue.clear()
+        self.submitted_tasks.clear()
 
     def get_dur(self, f):
         try:
