@@ -320,13 +320,23 @@ class TaskCard(ctk.CTkFrame):
         self.source_mode = "PENDING"
         self.filepath = filepath
         
-        ctk.CTkLabel(self, text=f"{index:02d}", font=("Impact", 20), text_color="#555").grid(row=0, column=0, rowspan=2, padx=15)
+        # [修改] 将 Label 赋值给 self.lbl_index 以便后续修改
+        self.lbl_index = ctk.CTkLabel(self, text=f"{index:02d}", font=("Impact", 20), text_color="#555")
+        self.lbl_index.grid(row=0, column=0, rowspan=2, padx=15)
+        
         ctk.CTkLabel(self, text=os.path.basename(filepath), font=("微软雅黑", 12, "bold"), text_color="#EEE", anchor="w").grid(row=0, column=1, sticky="w", padx=5, pady=(8,0))
         self.lbl_status = ctk.CTkLabel(self, text="等待处理", font=("Arial", 10), text_color="#888", anchor="w")
         self.lbl_status.grid(row=1, column=1, sticky="w", padx=5, pady=(0,8))
         self.progress = ctk.CTkProgressBar(self, height=4, corner_radius=0, progress_color=COLOR_ACCENT, fg_color="#444")
         self.progress.set(0)
         self.progress.grid(row=2, column=0, columnspan=3, sticky="ew")
+
+    # [新增] 用于更新序号的方法
+    def update_index(self, new_index):
+        try:
+            if self.winfo_exists():
+                self.lbl_index.configure(text=f"{new_index:02d}")
+        except: pass
 
     def set_status(self, text, color="#888", code=None):
         try:
@@ -403,12 +413,37 @@ class UltraEncoderApp(DnDWindow):
 
     def add_list(self, files):
         with self.queue_lock:
+            # 1. 先将新文件加入队列和字典
+            new_added = False
             for f in files:
                 if f not in self.file_queue and f.lower().endswith(('.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv')):
                     self.file_queue.append(f)
-                    card = TaskCard(self.scroll, len(self.file_queue), f)
-                    card.pack(fill="x", pady=4) 
-                    self.task_widgets[f] = card
+                    # 创建卡片 (序号先填0，稍后统一刷新)
+                    if f not in self.task_widgets:
+                        card = TaskCard(self.scroll, 0, f) 
+                        self.task_widgets[f] = card
+                    new_added = True
+            
+            if not new_added: return
+
+            # 2. [核心功能] 按照文件大小排序 (从小到大)
+            # 辅助函数：获取文件大小 (字节)
+            def get_file_size(path):
+                try: return os.path.getsize(path)
+                except: return float('inf') # 如果读取失败，放到最后
+            
+            # 对 file_queue 进行原地排序
+            self.file_queue.sort(key=get_file_size)
+
+            # 3. 刷新 UI 列表顺序
+            for i, f in enumerate(self.file_queue):
+                if f in self.task_widgets:
+                    card = self.task_widgets[f]
+                    # 先解绑 (从界面移除但保留实例)，再重新 Pack (按新顺序添加)
+                    card.pack_forget()
+                    card.pack(fill="x", pady=4)
+                    # 更新左侧序号 (i+1)
+                    card.update_index(i + 1)
 
     def apply_system_priority(self, level):
         mapping = {"常规": PRIORITY_NORMAL, "优先": PRIORITY_ABOVE, "极速": PRIORITY_HIGH}
