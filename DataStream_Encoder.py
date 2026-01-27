@@ -9,6 +9,9 @@ import time
 import shutil
 import ctypes
 from concurrent.futures import ThreadPoolExecutor
+import http.server
+import socketserver
+from http import HTTPStatus
 
 # === 全局视觉配置 ===
 ctk.set_appearance_mode("Dark")
@@ -67,6 +70,60 @@ class MEMORYSTATUSEX(ctypes.Structure):
                 ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong), 
                 ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), 
                 ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+# === 内存流媒体服务器 (核心黑科技) ===
+class RamHttpHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args): pass # 静默模式，不打印日志
+
+    def do_GET(self):
+        # 获取全局存储的二进制数据
+        data = self.server.ram_data
+        if not data:
+            self.send_error(HTTPStatus.NOT_FOUND, "No data loaded")
+            return
+
+        file_size = len(data)
+        start, end = 0, file_size - 1
+
+        # 解析 Range 头 (实现 Seek 的关键)
+        if "Range" in self.headers:
+            range_header = self.headers["Range"]
+            try:
+                # 格式通常为 bytes=0-1023
+                range_val = range_header.split("=")[1]
+                start_str, end_str = range_val.split("-")
+                if start_str: start = int(start_str)
+                if end_str: end = int(end_str)
+            except: pass
+        
+        # 计算长度
+        chunk_len = (end - start) + 1
+        
+        # 发送响应头
+        self.send_response(HTTPStatus.PARTIAL_CONTENT if "Range" in self.headers else HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+        self.send_header("Content-Length", str(chunk_len))
+        self.send_header("Accept-Ranges", "bytes")
+        self.end_headers()
+
+        # 发送内存切片
+        try:
+            self.wfile.write(data[start : end + 1])
+        except (ConnectionResetError, BrokenPipeError):
+            pass # 客户端断开是正常的
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True # 确保主程序退出时子线程也退出
+
+def start_ram_server(ram_data):
+    # 自动分配一个空闲端口 (端口为0时)
+    server = ThreadedHTTPServer(('127.0.0.1', 0), RamHttpHandler)
+    server.ram_data = ram_data
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, port, thread
 
 def get_free_ram_gb():
     try:
@@ -560,7 +617,7 @@ class UltraEncoderApp(DnDWindow):
     def process(self, input_file):
         if self.stop_flag: return
         
-        # === 获取线程槽位 ===
+        # ... (获取线程槽位代码保持不变) ...
         my_slot_idx = None
         while my_slot_idx is None and not self.stop_flag:
             with self.slot_lock:
@@ -571,11 +628,11 @@ class UltraEncoderApp(DnDWindow):
         card = self.task_widgets[input_file]
         ch_ui = self.monitor_slots[my_slot_idx]
         
-        # 等待缓存完成
+        # ... (缓存等待逻辑保持不变) ...
         while card.status_code == STATUS_CACHING and not self.stop_flag: 
             time.sleep(0.5)
 
-        # 确保缓存逻辑执行（针对Pending状态）
+        # ... (PENDING 处理逻辑保持不变) ...
         if card.source_mode == "PENDING":
             self.read_lock.acquire()
             try:
@@ -588,21 +645,23 @@ class UltraEncoderApp(DnDWindow):
             with self.slot_lock: self.available_indices.append(my_slot_idx); self.available_indices.sort()
             return
 
-        # === 核心处理逻辑 (含重试机制) ===
-        max_retries = 1 # 允许重试1次
+        # === 核心处理逻辑 ===
+        max_retries = 1 
         current_try = 0
         success = False
-        final_out = ""
+        output_log = []
         
+        # 定义变量存储服务器引用
+        ram_server = None 
+
         while current_try <= max_retries and not self.stop_flag:
-            # 1. 准备参数
+            output_log.clear()
             using_gpu = self.gpu_var.get()
             mode_label = {"DIRECT": "SSD直读", "RAM": "内存加速", "SSD_CACHE": "缓存加速"}.get(card.source_mode, "未知")
-            status_text = f"▶️ 压制中 ({mode_label})"
             
-            # 如果是重试且刚刚关闭了GPU，提示用户
-            if current_try > 0 and not using_gpu:
-                status_text = "⚠️ GPU失败，转CPU重试中..."
+            # 状态显示
+            status_text = f"▶️ 压制中 ({mode_label})"
+            if current_try > 0: status_text = f"⚠️ 重试中 (CPU)..."
             
             self.after(0, lambda: [card.set_status(status_text, COLOR_ACCENT, STATUS_RUN), card.set_progress(0, COLOR_ACCENT)])
             
@@ -616,61 +675,58 @@ class UltraEncoderApp(DnDWindow):
             suffix = "_H265" if "H.265" in codec_sel else "_H264"
             final_out = os.path.join(os.path.dirname(input_file), f"{name}{suffix}{ext}")
             
-            # 2. 构建 FFmpeg 命令
+            # === 构建输入源 ===
+            input_arg = input_file
+            
+            # [关键修改] RAM 模式下启动 HTTP Server
+            if card.source_mode == "RAM":
+                try:
+                    if not ram_server: # 防止重试时重复启动
+                        ram_server, port, _ = start_ram_server(card.ram_data)
+                    # 构造本地 URL
+                    input_arg = f"http://127.0.0.1:{port}/video{ext}"
+                    print(f"Memory Streaming at: {input_arg}")
+                except Exception as e:
+                    print(f"Server Error: {e}")
+                    card.source_mode = "DIRECT" # 启动失败降级为直读
+                    input_arg = input_file
+
+            elif card.source_mode == "SSD_CACHE": 
+                input_arg = card.ssd_cache_path
+            
+            # 构建命令
             v_codec = "hevc_nvenc" if "H.265" in codec_sel else "h264_nvenc"
             if not using_gpu: v_codec = "libx265" if "H.265" in codec_sel else "libx264"
-            
-            input_arg = input_file
-            if card.source_mode == "RAM": input_arg = "pipe:0"
-            elif card.source_mode == "SSD_CACHE": input_arg = card.ssd_cache_path
             
             cmd = ["ffmpeg", "-y", "-i", input_arg, "-c:v", v_codec]
             
             if using_gpu:
-                # GPU 参数
                 cmd.extend(["-pix_fmt", "yuv420p", "-rc", "vbr", "-cq", str(self.crf_var.get()), 
                             "-preset", "p6", "-b:v", "0"])
             else:
-                # CPU 参数
                 cmd.extend(["-crf", str(self.crf_var.get()), "-preset", "medium"])
-                
+            
             cmd.extend(["-c:a", "copy", final_out])
             
-            # 3. 执行进程
-            dur_file = input_file if card.source_mode != "SSD_CACHE" else card.ssd_cache_path
+            # 运行 FFmpeg
+            dur_file = input_file 
             duration = self.get_dur(dur_file)
             
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             
-            # 捕获日志列表
-            output_log = []
-            
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if card.source_mode == "RAM" else None, 
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
-                                   startupinfo=si)
+            # 注意：HTTP模式不需要 stdin=PIPE
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=si)
             self.active_procs.append(proc)
-            
-            # 管道输入线程
-            def feed_stdin():
-                try:
-                    if card.ram_data:
-                        proc.stdin.write(card.ram_data)
-                        proc.stdin.close()
-                except: pass
-            
-            if card.source_mode == "RAM":
-                threading.Thread(target=feed_stdin, daemon=True).start()
             
             start_t = time.time()
             last_upd = 0
             
-            # 4. 读取日志与进度
             for line in proc.stdout:
                 if self.stop_flag: break
                 try: 
                     line_str = line.decode('utf-8', errors='ignore').strip()
-                    if line_str: output_log.append(line_str) # 存入日志
+                    if line_str: output_log.append(line_str)
                 except: continue
                 
                 if "time=" in line_str and duration > 0:
@@ -689,28 +745,55 @@ class UltraEncoderApp(DnDWindow):
             proc.wait()
             if proc in self.active_procs: self.active_procs.remove(proc)
             
-            # 5. 结果判定
-            if self.stop_flag: break
-            
+            # 成功判定
             if proc.returncode == 0:
-                # 检查文件是否有效 (这里保留了你的500KB检查，虽然可能有坑，但先按你说的保留)
                 if os.path.exists(final_out) and os.path.getsize(final_out) > 500*1024:
                     success = True
-                    break # 成功，跳出重试循环
+                    break 
                 else:
-                    output_log.append(f"[System Error] Output file too small or missing: {final_out}")
+                    output_log.append(f"[System Error] File too small: {final_out}")
             
-            # 6. 失败处理与自动降级逻辑
-            if not success:
-                if using_gpu and current_try < max_retries:
-                    print(f"GPU Encoding failed for {fname}. Switching to CPU...")
-                    output_log.append("[System Info] NVENC failed. Retrying with CPU...")
-                    self.gpu_var.set(False) # 自动关闭 GPU 开关
-                    current_try += 1
-                    time.sleep(1) # 稍作停顿
-                    continue # 重新开始循环
-                else:
-                    break # 无法挽回，彻底失败
+            # 失败处理：只尝试切CPU，不再切直读（因为HTTP模式已经模拟了直读）
+            if not success and using_gpu and current_try < max_retries:
+                output_log.append("[Auto-Fix] GPU failed. Switching to CPU.")
+                self.gpu_var.set(False)
+                current_try += 1
+                time.sleep(1)
+                continue
+            else:
+                break 
+
+        # === 清理服务器 ===
+        if ram_server:
+            ram_server.shutdown() # 关闭服务器
+            ram_server.server_close()
+
+        # === 收尾 ===
+        card.clean_memory()
+        if card.ssd_cache_path:
+            try: 
+                os.remove(card.ssd_cache_path)
+                self.temp_files.remove(card.ssd_cache_path)
+            except: pass
+        
+        self.after(0, ch_ui.reset)
+        with self.slot_lock: self.available_indices.append(my_slot_idx); self.available_indices.sort()
+        
+        if success:
+             orig_sz = os.path.getsize(input_file)
+             new_sz = os.path.getsize(final_out)
+             sv = 100 - (new_sz/orig_sz*100) if orig_sz > 0 else 0
+             self.after(0, lambda: [card.set_status(f"完成 | 压缩率: {sv:.1f}%", COLOR_SUCCESS, STATUS_DONE), card.set_progress(1, COLOR_SUCCESS)])
+        else:
+             self.after(0, lambda: card.set_status("失败 (点击看日志)", COLOR_ERROR, STATUS_ERR))
+             err_msg = "\n".join(output_log[-20:])
+             def show_err():
+                 messagebox.showerror(f"任务失败: {fname}", f"FFmpeg 报错日志 (最后20行):\n\n{err_msg}")
+             self.after(0, show_err)
+
+        with self.queue_lock:
+            if input_file in self.submitted_tasks: self.submitted_tasks.remove(input_file)
+    
 
         # === 循环结束后的收尾 ===
         card.clean_memory()
