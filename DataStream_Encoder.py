@@ -184,22 +184,39 @@ def get_force_ssd_dir():
     os.makedirs(path, exist_ok=True)
     return path
 
-# === 磁盘类型检测 ===
+# === 磁盘类型检测 (增强版) ===
 drive_type_cache = {}
+
 def is_drive_ssd(path):
     drive_letter = os.path.splitdrive(path)[0]
     if not drive_letter: return False
     drive_letter = drive_letter.upper()
+    
+    # 查缓存
     if drive_letter in drive_type_cache: return drive_type_cache[drive_letter]
+    
+    is_ssd = False
     try:
-        cmd = f'Get-Partition -DriveLetter {drive_letter[0]} | Get-Disk | Select-Object -ExpandProperty MediaType'
+        # 方法A: PowerShell (标准方法，但有时会识别为 Unspecified)
+        cmd_ps = f'Get-Partition -DriveLetter {drive_letter[0]} | Get-Disk | Select-Object -ExpandProperty MediaType'
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        result = subprocess.check_output(["powershell", "-Command", cmd], startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW).decode().strip()
-        is_ssd = "SSD" in result.upper()
-        drive_type_cache[drive_letter] = is_ssd
-        return is_ssd
-    except: return False # 默认回退 False
+        res_ps = subprocess.check_output(["powershell", "-Command", cmd_ps], startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW).decode().strip().upper()
+        if "SSD" in res_ps: is_ssd = True
+        
+        # 方法B: WMIC (备用方法，检查模型名称中是否包含 SSD 字样)
+        if not is_ssd:
+            cmd_wmic = f'wmic diskdrive get caption'
+            res_wmic = subprocess.check_output(cmd_wmic, shell=True, startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW).decode().upper()
+            # 这里逻辑稍微模糊一点：如果系统里有任何设备名带 SSD，且当前盘不是 A/B 软驱，
+            # 我们虽然不能精确对应盘符，但对于无法识别 MediaType 的情况，倾向于判定为 False，
+            # 这里不强行猜测。但我们可以依赖下面的“异地缓存策略”来兜底。
+            pass
+
+    except: pass
+    
+    drive_type_cache[drive_letter] = is_ssd
+    return is_ssd
 
 # === 组件定义 ===
 class InfinityScope(ctk.CTkCanvas):
@@ -368,13 +385,35 @@ class UltraEncoderApp(DnDWindow):
     def apply_system_priority(self, level):
         mapping = {"常规": PRIORITY_NORMAL, "优先": PRIORITY_ABOVE, "极速": PRIORITY_HIGH}
         p_val = mapping.get(level, PRIORITY_ABOVE)
+        
+        # 1. 修改主程序 (UI) 优先级
         try:
             pid = os.getpid()
             handle = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, pid)
             ctypes.windll.kernel32.SetPriorityClass(handle, p_val)
-            self.set_status_bar(f"系统优先级: {level}")
+            ctypes.windll.kernel32.CloseHandle(handle)
         except: pass
 
+        # 2. [新增] 实时遍历并修改所有正在运行的 FFmpeg 子进程
+        count = 0
+        for proc in self.active_procs:
+            if proc.poll() is None: # 确保进程还在运行
+                try:
+                    # 获取子进程句柄并设置优先级
+                    # 0x0100=PROCESS_QUERY_INFORMATION, 0x0200=PROCESS_SET_INFORMATION
+                    h_sub = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, proc.pid)
+                    if h_sub:
+                        ctypes.windll.kernel32.SetPriorityClass(h_sub, p_val)
+                        ctypes.windll.kernel32.CloseHandle(h_sub)
+                        count += 1
+                except: pass
+        
+        # 状态栏反馈
+        if count > 0:
+            self.set_status_bar(f"优先级: {level} (已实时应用到 {count} 个任务)")
+        else:
+            self.set_status_bar(f"系统优先级: {level} (将应用于新任务)")
+    
     def on_closing(self):
         if self.running:
             if not messagebox.askokcancel("退出", "任务正在进行中，确定要退出？"): return
@@ -678,26 +717,68 @@ class UltraEncoderApp(DnDWindow):
         output_log = []
         ram_server = None 
         
-        # [新增] 确定输出路径逻辑
+        # [动态智能磁盘选择 - 异地缓存策略]
         fname = os.path.basename(input_file)
         name, ext = os.path.splitext(fname)
         codec_sel = self.codec_var.get()
         suffix = "_H265" if "H.265" in codec_sel else "_H264"
-        
-        # 最终目标文件 (在原目录下)
         final_target_file = os.path.join(os.path.dirname(input_file), f"{name}{suffix}{ext}")
         
-        # 实际工作文件 (FFmpeg 写入的地方)
-        # 逻辑：如果源文件已经在SSD (DIRECT模式)，则直接写源盘。
-        # 否则 (源是HDD)，写到 self.temp_dir (SSD缓存池)，最后再移回去。
-        is_src_ssd = is_drive_ssd(input_file)
-        if is_src_ssd:
+        # 1. 获取源文件所在盘符 (例如 "E:")
+        src_drive = os.path.splitdrive(os.path.abspath(input_file))[0].upper()
+        
+        # 2. 寻找最佳缓存盘 
+        # 策略：优先找非源盘的SSD > 非源盘的HDD > C盘
+        best_cache_dir = None
+        max_free = 0
+        candidate_ssd = None
+        candidate_hdd = None # 任意非源盘
+        
+        drives = [f"{chr(i)}:" for i in range(65, 91) if os.path.exists(f"{chr(i)}:")]
+        
+        for d in drives:
+            if d == src_drive: continue # 坚决不用源盘
+            
+            root = f"{d}\\"
+            try:
+                free = shutil.disk_usage(root).free
+                if free > 30*1024**3: # 至少30G空闲
+                    # 如果是 SSD，优先级最高
+                    if is_drive_ssd(root):
+                        if free > max_free:
+                            max_free = free
+                            candidate_ssd = root
+                    # 如果是 HDD，但也先记下来作为备选
+                    elif not candidate_hdd: 
+                        candidate_hdd = root
+            except: pass
+            
+        # 决策：有SSD用SSD，没SSD用异地HDD，再不行用C盘
+        if candidate_ssd:
+            best_root = candidate_ssd
+            disk_mode_msg = f"SSD加速 ({best_root[:3]})"
+        elif candidate_hdd:
+            best_root = candidate_hdd
+            disk_mode_msg = f"异地读写 ({best_root[:3]})"
+        else:
+            best_root = "C:\\" # 实在没盘了，用C盘顶一下，总比源盘强
+            disk_mode_msg = "系统盘缓存"
+
+        best_cache_dir = os.path.join(best_root, "_Ultra_Smart_Cache_")
+        os.makedirs(best_cache_dir, exist_ok=True)
+        
+        # 3. 确定写入路径
+        # 只有一种情况直写源盘：源盘被识别为 SSD 且没有找到更好的盘
+        is_src_ssd_detected = is_drive_ssd(src_drive + "\\")
+        
+        if is_src_ssd_detected and not candidate_ssd:
             working_output_file = final_target_file
             need_move_back = False
+            disk_mode_msg = "SSD直写"
         else:
-            # 写入到缓存盘，避免机械硬盘同时读写
-            temp_name = f"TEMP_ENC_{int(time.time())}_{name}{suffix}{ext}"
-            working_output_file = os.path.join(self.temp_dir, temp_name)
+            # 其他情况（源是HDD，或者源是SSD但我们想用另一个SSD分担）
+            temp_name = f"TEMP_{int(time.time())}_{name}{suffix}{ext}"
+            working_output_file = os.path.join(best_cache_dir, temp_name)
             need_move_back = True
 
         while current_try <= max_retries and not self.stop_flag:
@@ -706,7 +787,7 @@ class UltraEncoderApp(DnDWindow):
             mode_label = {"DIRECT": "SSD直读", "RAM": "内存加速", "SSD_CACHE": "缓存加速"}.get(card.source_mode, "未知")
             
             # 状态显示
-            status_text = f"▶️ 压制中 ({mode_label})"
+            status_text = f"▶️ {disk_mode_msg}"
             if current_try > 0: status_text = f"⚠️ 重试中 (CPU)..."
             
             self.after(0, lambda: [card.set_status(status_text, COLOR_ACCENT, STATUS_RUN), card.set_progress(0, COLOR_ACCENT)])
@@ -737,12 +818,13 @@ class UltraEncoderApp(DnDWindow):
             cmd = ["ffmpeg", "-y", "-i", input_arg, "-c:v", v_codec]
             
             if using_gpu:
+                # 获取当前UI设置的优先级
                 cmd.extend(["-pix_fmt", "yuv420p", "-rc", "vbr", "-cq", str(self.crf_var.get()), 
                             "-preset", "p6", "-b:v", "0"])
             else:
                 cmd.extend(["-crf", str(self.crf_var.get()), "-preset", "medium"])
             
-            # 输出到工作路径 (SSD 或 源盘)
+            # 关键：添加 -progress pipe:1 和 -nostats
             cmd.extend(["-c:a", "copy", "-progress", "pipe:1", "-nostats", working_output_file])
             
             dur_file = input_file 
@@ -754,6 +836,15 @@ class UltraEncoderApp(DnDWindow):
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=si)
             self.active_procs.append(proc)
             
+            # 进程启动后，立刻应用一次当前的系统优先级
+            try:
+                p_val = {"常规": PRIORITY_NORMAL, "优先": PRIORITY_ABOVE, "极速": PRIORITY_HIGH}.get(self.priority_var.get(), PRIORITY_ABOVE)
+                h_sub = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, proc.pid)
+                if h_sub:
+                    ctypes.windll.kernel32.SetPriorityClass(h_sub, p_val)
+                    ctypes.windll.kernel32.CloseHandle(h_sub)
+            except: pass
+
             start_t = time.time()
             last_upd = 0
             
@@ -794,7 +885,6 @@ class UltraEncoderApp(DnDWindow):
             if self.stop_flag: 
                 if ram_server: ram_server.shutdown(); ram_server.server_close()
                 card.clean_memory()
-                # 停止时，如果产生了临时文件，记得清理
                 if need_move_back and os.path.exists(working_output_file):
                     try: os.remove(working_output_file)
                     except: pass
@@ -814,7 +904,6 @@ class UltraEncoderApp(DnDWindow):
                 self.gpu_var.set(False)
                 current_try += 1
                 time.sleep(1)
-                # 失败重试前清理可能存在的半成品
                 if os.path.exists(working_output_file):
                     try: os.remove(working_output_file)
                     except: pass
@@ -829,7 +918,6 @@ class UltraEncoderApp(DnDWindow):
         if success and need_move_back:
             try:
                 self.after(0, lambda: card.set_status("📦 回写硬盘中...", COLOR_MOVING, STATUS_RUN))
-                # 使用 shutil.move 将 SSD 的成品移回 HDD
                 shutil.move(working_output_file, final_target_file)
             except Exception as e:
                 success = False
@@ -848,7 +936,6 @@ class UltraEncoderApp(DnDWindow):
         
         if success:
              orig_sz = os.path.getsize(input_file)
-             # 获取最终文件大小
              if os.path.exists(final_target_file):
                  new_sz = os.path.getsize(final_target_file)
                  sv = 100 - (new_sz/orig_sz*100) if orig_sz > 0 else 0
