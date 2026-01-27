@@ -65,33 +65,56 @@ except ImportError:
     HAS_DND = False
 
 # === Windows 电源节流解除 (防最小化降速) ===
+# === Windows 电源节流解除 (增强版：支持指定句柄) ===
 class PROCESS_POWER_THROTTLING_STATE(ctypes.Structure):
     _fields_ = [("Version", ctypes.c_ulong),
                 ("ControlMask", ctypes.c_ulong),
                 ("StateMask", ctypes.c_ulong)]
 
-def disable_power_throttling():
+# 防止系统休眠/息屏常量
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+
+def set_execution_state(enable=True):
+    """防止系统在压制过程中休眠或降频"""
     try:
-        # 禁止 Windows 将此进程判定为后台低功耗任务
+        if enable:
+            # 阻止系统休眠 + 保持运行状态
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        else:
+            # 恢复正常
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+    except: pass
+
+def disable_power_throttling(process_handle=None):
+    """
+    禁止 Windows 将进程判定为后台低功耗任务 (EcoQoS/效率模式)
+    如果不传 handle，则默认处理当前主进程。
+    """
+    try:
         PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1
         PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION = 0x4
         PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1
-        
         ProcessPowerThrottling = 0x22
         
         state = PROCESS_POWER_THROTTLING_STATE()
         state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION
+        # ControlMask: 我们要接管哪些位的控制权
         state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
-        state.StateMask = 0 # 清零意味着：不节流，全速运行
+        # StateMask: 设为 0 表示关闭这些节流机制 (即全速运行)
+        state.StateMask = 0 
         
-        handle = ctypes.windll.kernel32.GetCurrentProcess()
-        ctypes.windll.kernel32.SetProcessInformation(
-            handle, 
+        if process_handle is None:
+            process_handle = ctypes.windll.kernel32.GetCurrentProcess()
+            
+        ret = ctypes.windll.kernel32.SetProcessInformation(
+            process_handle, 
             ProcessPowerThrottling, 
             ctypes.byref(state), 
             ctypes.sizeof(state)
         )
-        print("Power Throttling Disabled: OK")
+        # 调试打印 (仅在调试时有用，实际运行可注释)
+        # print(f"Throttling Disabled for Handle {process_handle}: {ret}")
     except Exception as e:
         print(f"Failed to disable throttling: {e}")
 
@@ -401,33 +424,36 @@ class TaskCard(ctk.CTkFrame):
 class UltraEncoderApp(DnDWindow):
     # [新增] 自动滚动到指定任务卡片
     def scroll_to_card(self, widget):
+        """修复后的自动滚动逻辑"""
         try:
-            # 强制刷新布局信息，确保坐标准确
+            # 1. 强制刷新布局，确保坐标是最新的
             self.scroll.update_idletasks()
             
-            # 获取画布对象
-            canvas = self.scroll._parent_canvas
+            # 2. 获取目标控件相对于滚动列表顶部的 Y 坐标
+            # widget.winfo_y() 获取的是在 parent 里的位置
+            item_y = widget.winfo_y()
+            item_height = widget.winfo_height()
             
-            # 获取滚动内容的真实总高度 (bbox 3 是下边界坐标)
-            _, _, _, content_height = canvas.bbox("all")
+            # 3. 获取滚动区域的总高度
+            # self.scroll.winfo_children()[0] 通常是那个被拉长的内部 Frame
+            inner_frame = self.scroll.winfo_children()[0]
+            total_height = inner_frame.winfo_height()
             
-            # 获取可视区域高度
+            # 4. 获取可视窗口的高度
             view_height = self.scroll.winfo_height()
             
-            if content_height > view_height:
-                # 获取目标卡片的 Y 坐标 (相对于内容顶部)
-                target_y = widget.winfo_y()
-                card_height = widget.winfo_height()
+            if total_height > view_height and total_height > 0:
+                # 5. 计算目标位置 (将卡片置于视口约 20% - 30% 的位置，视觉上最舒适)
+                # 如果 item_y 很小（刚开始），target_pos 会是 0
+                target_pos = (item_y - view_height * 0.25) / (total_height - view_height)
                 
-                # 计算目标位置：让卡片显示在可视区域的 1/3 处，而不是贴顶，视觉更舒适
-                target_pos = (target_y - view_height * 0.3) / content_height
-                
-                # 限制范围在 0.0 - 1.0 之间
+                # 限制在 0.0 到 1.0 之间
                 target_pos = max(0.0, min(1.0, target_pos))
                 
-                canvas.yview_moveto(target_pos)
+                # 6. 执行滚动
+                self.scroll._parent_canvas.yview_moveto(target_pos)
         except Exception as e: 
-            print(f"Scroll Error: {e}")
+            print(f"Scroll Fix Error: {e}")
     
     def __init__(self):
         super().__init__()
@@ -457,7 +483,10 @@ class UltraEncoderApp(DnDWindow):
         self.temp_files = set()
         
         self.setup_ui()
-        disable_power_throttling()
+        # 【新增】全局防降速
+        disable_power_throttling() # 对主界面
+        set_execution_state(True)  # 阻止系统休眠
+        
         self.after(200, self.sys_check)
         
         if HAS_DND:
@@ -542,6 +571,8 @@ class UltraEncoderApp(DnDWindow):
         self.kill_all_procs()
         self.clean_junk()
         self.destroy()
+        set_execution_state(False) # 【新增】恢复系统休眠策略
+        self.stop_flag = True
         os._exit(0)
         
     def kill_all_procs(self):
@@ -932,10 +963,15 @@ class UltraEncoderApp(DnDWindow):
             
             # 尝试应用优先级
             try:
+                # 1. 设置优先级 (原代码已有，保留)
                 p_val = {"常规": PRIORITY_NORMAL, "优先": PRIORITY_ABOVE, "极速": PRIORITY_HIGH}.get(self.priority_var.get(), PRIORITY_ABOVE)
                 h_sub = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, proc.pid)
                 if h_sub:
                     ctypes.windll.kernel32.SetPriorityClass(h_sub, p_val)
+                    
+                    # 2. 【新增】强制对 FFmpeg 子进程关闭电源节流/效率模式
+                    disable_power_throttling(h_sub)
+                    
                     ctypes.windll.kernel32.CloseHandle(h_sub)
             except: pass
 
