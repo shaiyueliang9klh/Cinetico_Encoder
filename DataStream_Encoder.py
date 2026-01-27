@@ -328,6 +328,22 @@ class TaskCard(ctk.CTkFrame):
 
 # === 主程序 ===
 class UltraEncoderApp(DnDWindow):
+    # [新增] 自动滚动到指定任务卡片
+    def scroll_to_card(self, widget):
+        try:
+            # 计算滚动位置 (简单估算)
+            self.scroll.update_idletasks()
+            # 获取目标控件相对于滚动框顶部的坐标
+            y = widget.winfo_y()
+            # 获取滚动框内容的总高度
+            h = self.scroll.winfo_height() # 可视高度
+            content_h = self.scroll._parent_canvas.bbox("all")[3] # 内容总高度
+            
+            if content_h > h:
+                pos = y / content_h
+                self.scroll._parent_canvas.yview_moveto(pos)
+        except: pass
+    
     def __init__(self):
         super().__init__()
         self.title("Ultra Encoder v46 - 修复版") # 中文标题
@@ -554,9 +570,8 @@ class UltraEncoderApp(DnDWindow):
             self.monitor_slots.append(ch)
 
     def process_caching(self, src_path, widget):
-        self.after(0, lambda: [widget.set_status("🔍 磁盘分析中...", COLOR_READING, STATUS_CACHING)])
-        
-        file_size_gb = os.path.getsize(src_path) / (1024**3)
+        file_size = os.path.getsize(src_path)
+        file_size_gb = file_size / (1024**3)
         
         # 1. 优先 SSD 直读检测
         is_ssd = is_drive_ssd(src_path)
@@ -565,15 +580,32 @@ class UltraEncoderApp(DnDWindow):
             widget.source_mode = "DIRECT"
             return True
 
-        # 2. RAM 缓存逻辑
+        # 2. RAM 缓存逻辑 (带进度条修复版)
         free_ram = get_free_ram_gb()
         available_for_cache = free_ram - SAFE_RAM_RESERVE
 
         if available_for_cache > file_size_gb and file_size_gb < MAX_RAM_LOAD_GB:
-            self.after(0, lambda: [widget.set_status("📥 载入内存中...", COLOR_RAM, STATUS_CACHING), widget.set_progress(0, COLOR_RAM)])
+            # 设置紫色状态
+            self.after(0, lambda: [widget.set_status("📥 读取中...", COLOR_READING, STATUS_CACHING), widget.set_progress(0, COLOR_READING)])
             try:
+                # [核心修复] 分块读取，每读 64MB 更新一次进度
+                chunk_size = 64 * 1024 * 1024 
+                data_buffer = bytearray()
+                read_len = 0
+                
                 with open(src_path, 'rb') as f:
-                    widget.ram_data = f.read() 
+                    while True:
+                        if self.stop_flag: return False
+                        chunk = f.read(chunk_size)
+                        if not chunk: break
+                        data_buffer.extend(chunk)
+                        read_len += len(chunk)
+                        
+                        if file_size > 0:
+                            prog = read_len / file_size
+                            self.after(0, lambda p=prog: widget.set_progress(p, COLOR_READING))
+                
+                widget.ram_data = bytes(data_buffer) # 转回不可变bytes
                 self.after(0, lambda: [widget.set_status("就绪 (内存加速)", COLOR_RAM, STATUS_READY), widget.set_progress(1, COLOR_RAM)])
                 widget.source_mode = "RAM"
                 return True
@@ -586,7 +618,6 @@ class UltraEncoderApp(DnDWindow):
         try:
             fname = os.path.basename(src_path)
             cache_path = os.path.join(self.temp_dir, f"CACHE_{int(time.time())}_{fname}")
-            total = os.path.getsize(src_path)
             copied = 0
             with open(src_path, 'rb') as fsrc:
                 with open(cache_path, 'wb') as fdst:
@@ -597,8 +628,8 @@ class UltraEncoderApp(DnDWindow):
                         if not chunk: break
                         fdst.write(chunk)
                         copied += len(chunk)
-                        if total > 0:
-                            self.after(0, lambda p=copied/total: widget.set_progress(p, COLOR_SSD_CACHE))
+                        if file_size > 0:
+                            self.after(0, lambda p=copied/file_size: widget.set_progress(p, COLOR_SSD_CACHE))
             self.temp_files.add(cache_path)
             widget.ssd_cache_path = cache_path
             widget.source_mode = "SSD_CACHE"
@@ -683,6 +714,9 @@ class UltraEncoderApp(DnDWindow):
         card = self.task_widgets[input_file]
         ch_ui = self.monitor_slots[my_slot_idx]
         
+        # [修复] 自动滚动到当前任务
+        self.after(0, lambda: self.scroll_to_card(card))
+        
         # 等待缓存完成
         while card.status_code == STATUS_CACHING and not self.stop_flag: 
             time.sleep(0.5)
@@ -707,66 +741,69 @@ class UltraEncoderApp(DnDWindow):
         output_log = []
         ram_server = None 
         
-        # [动态智能磁盘选择 - 修复版]
+        # [修复] 磁盘智能选择 v2.0
         fname = os.path.basename(input_file)
         name, ext = os.path.splitext(fname)
         codec_sel = self.codec_var.get()
         suffix = "_H265" if "H.265" in codec_sel else "_H264"
         final_target_file = os.path.join(os.path.dirname(input_file), f"{name}{suffix}{ext}")
         
-        # 1. 获取源文件所在盘符
         src_drive = os.path.splitdrive(os.path.abspath(input_file))[0].upper()
         
-        # 2. 寻找最佳缓存盘 
-        # [修复] 修正遍历方式，确保能找到其他SSD
-        best_cache_dir = None
+        # 寻找缓存盘策略：
+        # 1. 必须不是源盘
+        # 2. 优先级：非C盘SSD > 非C盘(未知类型但空间大) > C盘SSD > C盘
+        best_cache_root = None
         max_free = 0
-        candidate_ssd = None
-        candidate_hdd = None
         
-        # 使用 X:\\ 格式来正确检测
+        candidates = [] # (priority, free_space, path) priority越大越好
+        
+        # 遍历存在的盘符
         drives = [f"{chr(i)}:\\" for i in range(65, 91) if os.path.exists(f"{chr(i)}:\\")]
         
         for root in drives:
-            # 排除源盘 (比较盘符 X:)
-            root_drive = os.path.splitdrive(root)[0].upper()
-            if root_drive == src_drive: continue 
+            d_letter = os.path.splitdrive(root)[0].upper()
+            if d_letter == src_drive: continue # 坚决不用源盘
             
             try:
                 free = shutil.disk_usage(root).free
-                if free > 30*1024**3: 
-                    if is_drive_ssd(root):
-                        if free > max_free:
-                            max_free = free
-                            candidate_ssd = root
-                    elif not candidate_hdd: 
-                        candidate_hdd = root
+                if free < 20*1024**3: continue # 空间小于20G的不考虑
+                
+                is_ssd_confirmed = is_drive_ssd(root)
+                is_system = d_letter == "C:"
+                
+                # 评分逻辑
+                score = 0
+                if not is_system: score += 10 # 非系统盘 +10分
+                if is_ssd_confirmed: score += 5 # 确认SSD +5分
+                
+                candidates.append((score, free, root))
             except: pass
-            
-        if candidate_ssd:
-            best_root = candidate_ssd
-            disk_mode_msg = f"SSD加速 ({best_root[:3]})"
-        elif candidate_hdd:
-            best_root = candidate_hdd
-            disk_mode_msg = f"异地读写 ({best_root[:3]})"
+        
+        # 排序：先按分数降序，再按剩余空间降序
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        
+        if candidates:
+            best_cache_root = candidates[0][2] # 取第一名
         else:
-            best_root = "C:\\" 
-            disk_mode_msg = "系统盘缓存"
-
-        best_cache_dir = os.path.join(best_root, "_Ultra_Smart_Cache_")
+            best_cache_root = "C:\\" # 没得选只能用C盘
+            
+        best_cache_dir = os.path.join(best_cache_root, "_Ultra_Smart_Cache_")
         os.makedirs(best_cache_dir, exist_ok=True)
         
-        # 3. 确定写入路径
-        # 只有在找不到其他SSD，且源盘自己就是SSD时，才直写源盘
+        # [修复] 实时更新UI上的缓存池位置显示
+        self.after(0, lambda: self.btn_cache.configure(text=f"缓存池: {best_cache_dir}"))
+        
+        # 决策写入路径
+        # 只有一种情况直写源盘：源盘被识别为 SSD 且 上面的逻辑没找到任何其他更好的非C盘
+        # (如果candidates为空，说明除了源盘和C盘没别的了)
         is_src_ssd_detected = is_drive_ssd(src_drive + "\\")
         
-        if is_src_ssd_detected and not candidate_ssd:
+        if is_src_ssd_detected and not candidates:
             working_output_file = final_target_file
             need_move_back = False
-            disk_mode_msg = "SSD直写"
         else:
-            # 只要找到了其他SSD (candidate_ssd)，即使源盘是SSD，也强制用其他SSD来分担
-            # 这样解决了“源盘是SSD，但我还想用另一个空闲SSD当缓存”的需求
+            # 只要找到了其他盘(candidates有值)，就强制用其他盘
             temp_name = f"TEMP_{int(time.time())}_{name}{suffix}{ext}"
             working_output_file = os.path.join(best_cache_dir, temp_name)
             need_move_back = True
@@ -776,8 +813,8 @@ class UltraEncoderApp(DnDWindow):
             using_gpu = self.gpu_var.get()
             mode_label = {"DIRECT": "SSD直读", "RAM": "内存加速", "SSD_CACHE": "缓存加速"}.get(card.source_mode, "未知")
             
-            # 状态显示
-            status_text = f"▶️ {disk_mode_msg}"
+            # [修复] 状态文案改为 "压制中"
+            status_text = f"▶️ 压制中"
             if current_try > 0: status_text = f"⚠️ 重试中 (CPU)..."
             
             self.after(0, lambda: [card.set_status(status_text, COLOR_ACCENT, STATUS_RUN), card.set_progress(0, COLOR_ACCENT)])
