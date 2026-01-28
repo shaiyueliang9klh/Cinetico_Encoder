@@ -331,6 +331,52 @@ def is_drive_ssd(path):
     print(f"[*] 最终判定 {drive_letter} 为: {'SSD' if is_ssd else 'HDD'}")
     return is_ssd
 
+# === 新增：检测是否为外接/USB设备 ===
+def is_bus_usb(path):
+    try:
+        root = os.path.splitdrive(os.path.abspath(path))[0].upper()
+        # 1. 简单检查：如果是可移动磁盘(如U盘)，直接返回 True
+        if ctypes.windll.kernel32.GetDriveTypeW(root + "\\") == 2:
+            return True
+
+        # 2. 深度检查：查询总线类型 (BusType)
+        # BusType 7 = USB, 11 = RAID, 8 = 1394
+        h_vol = ctypes.windll.kernel32.CreateFileW(
+            f"\\\\.\\{root}", 0, 0x1|0x2, None, 3, 0, None
+        )
+        if h_vol == -1: return False
+        
+        class STORAGE_PROPERTY_QUERY(ctypes.Structure):
+            _fields_ = [("PropertyId", ctypes.c_uint), ("QueryType", ctypes.c_uint), ("AdditionalParameters", ctypes.c_byte * 1)]
+        
+        class STORAGE_DEVICE_DESCRIPTOR(ctypes.Structure):
+            _fields_ = [("Version", ctypes.c_ulong), ("Size", ctypes.c_ulong),
+                        ("DeviceType", ctypes.c_byte), ("DeviceTypeModifier", ctypes.c_byte),
+                        ("RemovableMedia", ctypes.c_bool), ("CommandQueueing", ctypes.c_bool),
+                        ("VendorIdOffset", ctypes.c_ulong), ("ProductIdOffset", ctypes.c_ulong),
+                        ("ProductRevisionOffset", ctypes.c_ulong), ("SerialNumberOffset", ctypes.c_ulong),
+                        ("BusType", ctypes.c_int)] # 核心字段
+
+        query = STORAGE_PROPERTY_QUERY()
+        query.PropertyId = 0 # StorageDeviceProperty
+        query.QueryType = 0  # PropertyStandardQuery
+        
+        out = STORAGE_DEVICE_DESCRIPTOR()
+        bytes_returned = ctypes.c_ulong()
+        
+        ret = ctypes.windll.kernel32.DeviceIoControl(
+            h_vol, 0x002D1400, ctypes.byref(query), ctypes.sizeof(query),
+            ctypes.byref(out), ctypes.sizeof(out), ctypes.byref(bytes_returned), None
+        )
+        ctypes.windll.kernel32.CloseHandle(h_vol)
+        
+        if ret:
+            # BusType 7 代表 USB
+            if out.BusType == 7: return True
+            
+        return False
+    except: return False
+
 # === 核心：统一智能选盘算法 (修复版：源盘扣分策略) ===
 def find_best_cache_drive(source_drive_letter=None):
     # 获取所有可用盘符 (A-Z)
@@ -444,6 +490,12 @@ class InfinityScope(ctk.CTkCanvas):
         if len(coords) >= 4:
             # width=2, smooth=True 是关键
             self.create_line(coords, fill=COLOR_CHART_LINE, width=2, smooth=True, capstyle="round", joinstyle="round")
+
+    def clear(self):
+        self.points = []
+        self.target_max = 10.0
+        self.display_max = 10.0 # 立即重置显示范围
+        self.delete("all")
 
 class MonitorChannel(ctk.CTkFrame):
     def __init__(self, master, ch_id, **kwargs):
@@ -609,24 +661,41 @@ class UltraEncoderApp(DnDWindow):
             self.drop_target_register(DND_FILES)
             self.dnd_bind('<<Drop>>', self.drop_file)
 
-    # === 新增：颜色插值动画函数 ===
+    # === 新增：颜色插值动画函数 (修复版：增加防崩溃校验) ===
     def animate_text_change(self, button, new_text, new_fg_color=None):
         """让按钮文字通过 淡出 -> 切换 -> 淡入 实现丝滑过渡"""
         
         # 1. 定义颜色转换工具
         def hex_to_rgb(hex_col):
+            # 安全校验：如果是空值或非字符串，直接返回白色/黑色作为默认
+            if not hex_col or not isinstance(hex_col, str):
+                return (255, 255, 255) # 默认白
+            
             hex_col = hex_col.lstrip('#')
-            return tuple(int(hex_col[i:i+2], 16) for i in (0, 2, 4))
+            if len(hex_col) != 6: 
+                return (255, 255, 255) # 格式不对也返回白
+                
+            try:
+                return tuple(int(hex_col[i:i+2], 16) for i in (0, 2, 4))
+            except:
+                return (255, 255, 255)
 
         def rgb_to_hex(rgb):
             return '#%02x%02x%02x' % (int(rgb[0]), int(rgb[1]), int(rgb[2]))
 
-        # 获取当前文字颜色 (默认黑色或配置色) 和 背景色 (模拟透明)
-        start_hex = button._text_color if hasattr(button, '_text_color') else "#000000"
-        if isinstance(start_hex, list) or isinstance(start_hex, tuple): start_hex = start_hex[1] # 取暗色模式颜色
+        # 获取当前文字颜色 (默认黑色或配置色)
+        # CustomTkinter 内部有时会返回空字符串，这里要做多重防御
+        start_hex = "#FFFFFF" # 默认兜底色
+        try:
+            raw_col = button._text_color
+            if isinstance(raw_col, (list, tuple)):
+                # 取决于当前模式，一般取第二个(Dark模式)
+                start_hex = raw_col[1] if len(raw_col) > 1 else raw_col[0]
+            elif isinstance(raw_col, str) and raw_col.strip() != "":
+                start_hex = raw_col
+        except: pass
         
         bg_hex = COLOR_ACCENT # 按钮当前的背景色，用于融合
-        target_text_hex = "#000000" # 最终文字颜色
         
         # 动画步骤
         steps = 10
@@ -651,12 +720,15 @@ class UltraEncoderApp(DnDWindow):
                 # 开始淡入
                 fade_in(0)
 
-        # 第二阶段：淡入 (背景色 -> 目标文字色)
+        # 第二阶段：淡入 (背景色 -> 目标文字色 默认为黑)
+        # 这里的 c1 改为目标色，通常按钮文字是黑色或白色
+        target_text_rgb = (0, 0, 0) # 目标设为黑色，显得更有力
+        
         def fade_in(step):
             if step <= steps:
-                r = c2[0] + (c1[0] - c2[0]) * (step / steps)
-                g = c2[1] + (c1[1] - c2[1]) * (step / steps)
-                b = c2[2] + (c1[2] - c2[2]) * (step / steps)
+                r = c2[0] + (target_text_rgb[0] - c2[0]) * (step / steps)
+                g = c2[1] + (target_text_rgb[1] - c2[1]) * (step / steps)
+                b = c2[2] + (target_text_rgb[2] - c2[2]) * (step / steps)
                 try: button.configure(text_color=rgb_to_hex((r,g,b)))
                 except: pass
                 self.after(delay, lambda: fade_in(step + 1))
@@ -885,12 +957,19 @@ class UltraEncoderApp(DnDWindow):
         file_size = os.path.getsize(src_path)
         file_size_gb = file_size / (1024**3)
         
-        # 1. 优先 SSD 直读检测
+        # 1. 磁盘与传输通道检测
         is_ssd = is_drive_ssd(src_path)
-        if is_ssd:
+        is_external = is_bus_usb(src_path)
+        
+        # 逻辑调整：只有 (是SSD) 且 (不是外接设备) 才允许直读
+        # 如果是外接SSD，因为USB传输的不稳定性，强制走内存/缓存
+        if is_ssd and not is_external:
             self.after(0, lambda: [widget.set_status("就绪 (SSD直读)", COLOR_DIRECT, STATUS_READY)])
             widget.source_mode = "DIRECT"
             return True
+        elif is_ssd and is_external:
+            print(f"[Policy] Detected External SSD ({src_path}). Forcing RAM/Cache for stability.")
+            # 不返回，继续向下执行，进入 RAM/SSD 缓存流程
 
         # 2. RAM 缓存逻辑 (带进度条修复版)
         free_ram = get_free_ram_gb()
