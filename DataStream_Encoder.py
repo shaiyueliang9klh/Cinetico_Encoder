@@ -870,7 +870,45 @@ class UltraEncoderApp(DnDWindow):
             return
         threading.Thread(target=self.scan_disk, daemon=True).start()
         threading.Thread(target=self.smart_preload_worker, daemon=True).start()
+        # === [新增] 启动 GPU 监控线程 ===
+        threading.Thread(target=self.gpu_monitor_loop, daemon=True).start()
         self.update_monitor_layout()
+
+    # === [新增] GPU 监控线程 ===
+    def gpu_monitor_loop(self):
+        while not self.stop_flag:
+            try:
+                # 使用 nvidia-smi 查询功率(power.draw)和温度(temperature.gpu)
+                # creationflags 防止弹出黑框
+                cmd = ["nvidia-smi", "--query-gpu=power.draw,temperature.gpu", "--format=csv,noheader,nounits"]
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                
+                output = subprocess.check_output(
+                    cmd, encoding="utf-8", startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW
+                ).strip()
+                
+                # output 格式通常为 "125.5, 60"
+                if output:
+                    p_str, t_str = output.split(",")
+                    power = float(p_str)
+                    temp = int(t_str)
+                    
+                    # 动态颜色逻辑：温度高了变色
+                    color = "#555555" # 默认灰
+                    if temp > 75: color = COLOR_ERROR      # 红 (过热)
+                    elif temp > 60: color = COLOR_SSD_CACHE # 橙 (负载高)
+                    elif power > 50: color = COLOR_SUCCESS  # 绿 (工作中有负载)
+                    
+                    # 更新 UI
+                    text = f"GPU: {power:.1f}W | {temp}°C"
+                    self.after(0, lambda t=text, c=color: self.lbl_gpu.configure(text=t, text_color=c))
+                    
+            except Exception:
+                # 如果没有 N 卡或查询失败，保持静默即可
+                pass
+            
+            time.sleep(0.5)
 
     def scan_disk(self):
         path = get_force_ssd_dir()
@@ -969,7 +1007,9 @@ class UltraEncoderApp(DnDWindow):
         r_head = ctk.CTkFrame(right, fg_color="transparent")
         r_head.pack(fill="x", padx=30, pady=(25, 10))
         ctk.CTkLabel(r_head, text="LIVE MONITOR", font=("Impact", 20), text_color="#333").pack(side="left")
-        # [修改] 删除了右侧状态栏文字
+        
+        self.lbl_gpu = ctk.CTkLabel(r_head, text="GPU: --W | --°C", font=("Consolas", 14, "bold"), text_color="#444")
+        self.lbl_gpu.pack(side="right")
         
         self.monitor_frame = ctk.CTkFrame(right, fg_color="transparent")
         self.monitor_frame.pack(fill="both", expand=True, padx=25, pady=(0, 25))
