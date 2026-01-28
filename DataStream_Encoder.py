@@ -403,7 +403,7 @@ def is_bus_usb(path):
                 
         return False
 
-# === 核心：统一智能选盘算法 (修复版：源盘扣分策略) ===
+# === 核心：统一智能选盘算法 (修复版：源盘扣分 + 外接盘扣分) ===
 def find_best_cache_drive(source_drive_letter=None):
     # 获取所有可用盘符 (A-Z)
     drives = [f"{chr(i)}:\\" for i in range(65, 91) if os.path.exists(f"{chr(i)}:\\")]
@@ -428,7 +428,7 @@ def find_best_cache_drive(source_drive_letter=None):
             if not is_system: 
                 score += 100
             
-            # 规则B: 如果检测到是SSD，额外 +50 (尽管现在检测不到，但这行留着无害)
+            # 规则B: 如果检测到是SSD，额外 +50
             if is_ssd_detected:
                 score += 50
             
@@ -436,13 +436,17 @@ def find_best_cache_drive(source_drive_letter=None):
             if is_system and is_ssd_detected:
                 score += 10
             
-            # [新功能] 规则D: 如果是源素材所在的盘，扣 50 分
-            # 这样既不会完全禁用它（防止没盘可用），又能让脚本优先选别的盘
+            # 规则D: 如果是源素材所在的盘，扣 50 分
             if source_drive_letter and d_letter == source_drive_letter.upper():
                 score -= 50
+
+            # 规则E: [新增] 如果是外接/雷电硬盘，扣 200 分 (防止选它做缓存)
+            if is_bus_usb(root):
+                score -= 200
                 
             candidates.append((score, usage.free, root))
-        except: pass
+        except: 
+            pass # <--- 这一行非常重要，千万不能漏！
     
     # 4. 竞价排名: 先比分数(高优先)，分数相同比剩余空间(大优先)
     candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
