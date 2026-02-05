@@ -12,13 +12,14 @@ from concurrent.futures import ThreadPoolExecutor
 import http.server
 import socketserver
 from http import HTTPStatus
+import math
 
 # === 全局视觉配置 ===
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
 
 # 针对 64GB 内存环境的配置
-MAX_RAM_LOAD_GB = 12.0  # 单个文件最大允许载入内存的大小 (GB)
+MAX_RAM_LOAD_GB = 16.0  # [优化] 提升单文件内存上限
 SAFE_RAM_RESERVE = 8.0  # 保留给系统的最小内存 (GB)
 
 COLOR_BG_MAIN = "#121212"
@@ -30,21 +31,21 @@ COLOR_ACCENT_HOVER = "#36719f"
 COLOR_CHART_LINE = "#00E676"
 COLOR_TEXT_WHITE = "#FFFFFF"
 COLOR_TEXT_GRAY = "#888888"
-COLOR_READY_RAM = "#00B894" # 薄荷绿 (内存就绪专用色)
-COLOR_SUCCESS = "#2ECC71" # 绿色 (就绪/完成)
-COLOR_MOVING = "#F1C40F"  # 金色 (移动/IO)
-COLOR_READING = "#9B59B6" # 紫色 (预读)
-COLOR_RAM     = "#3498DB" # 蓝色 (驻留内存)
-COLOR_SSD_CACHE = "#E67E22" # 橙色 (SSD缓存)
-COLOR_DIRECT  = "#1ABC9C" # 青色 (直读)
-COLOR_PAUSED = "#7f8c8d"  # 灰色
-COLOR_ERROR = "#FF4757"   # 红色
+COLOR_READY_RAM = "#00B894" 
+COLOR_SUCCESS = "#2ECC71" 
+COLOR_MOVING = "#F1C40F"  
+COLOR_READING = "#9B59B6" 
+COLOR_RAM     = "#3498DB" 
+COLOR_SSD_CACHE = "#E67E22" 
+COLOR_DIRECT  = "#1ABC9C" 
+COLOR_PAUSED = "#7f8c8d"  
+COLOR_ERROR = "#FF4757"   
 
 # 状态码
 STATUS_WAIT = 0
-STATUS_CACHING = 1   # 正在载入
-STATUS_READY = 2     # 就绪
-STATUS_RUN = 3       # 压制中
+STATUS_CACHING = 1   
+STATUS_READY = 2     
+STATUS_RUN = 3       
 STATUS_DONE = 5
 STATUS_ERR = -1
 
@@ -64,59 +65,37 @@ except ImportError:
     class DnDWindow(ctk.CTk): pass
     HAS_DND = False
 
-# === Windows 电源节流解除 (防最小化降速) ===
-# === Windows 电源节流解除 (增强版：支持指定句柄) ===
+# === Windows 功耗管理 ===
 class PROCESS_POWER_THROTTLING_STATE(ctypes.Structure):
     _fields_ = [("Version", ctypes.c_ulong),
                 ("ControlMask", ctypes.c_ulong),
                 ("StateMask", ctypes.c_ulong)]
 
-# 防止系统休眠/息屏常量
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 
 def set_execution_state(enable=True):
-    """防止系统在压制过程中休眠或降频"""
     try:
         if enable:
-            # 阻止系统休眠 + 保持运行状态
             ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
         else:
-            # 恢复正常
             ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
     except: pass
 
 def disable_power_throttling(process_handle=None):
-    """
-    禁止 Windows 将进程判定为后台低功耗任务 (EcoQoS/效率模式)
-    如果不传 handle，则默认处理当前主进程。
-    """
     try:
         PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1
         PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION = 0x4
         PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1
         ProcessPowerThrottling = 0x22
-        
         state = PROCESS_POWER_THROTTLING_STATE()
         state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION
-        # ControlMask: 我们要接管哪些位的控制权
         state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
-        # StateMask: 设为 0 表示关闭这些节流机制 (即全速运行)
         state.StateMask = 0 
-        
         if process_handle is None:
             process_handle = ctypes.windll.kernel32.GetCurrentProcess()
-            
-        ret = ctypes.windll.kernel32.SetProcessInformation(
-            process_handle, 
-            ProcessPowerThrottling, 
-            ctypes.byref(state), 
-            ctypes.sizeof(state)
-        )
-        # 调试打印 (仅在调试时有用，实际运行可注释)
-        # print(f"Throttling Disabled for Handle {process_handle}: {ret}")
-    except Exception as e:
-        print(f"Failed to disable throttling: {e}")
+        ctypes.windll.kernel32.SetProcessInformation(process_handle, ProcessPowerThrottling, ctypes.byref(state), ctypes.sizeof(state))
+    except: pass
 
 class MEMORYSTATUSEX(ctypes.Structure):
     _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), 
@@ -125,53 +104,38 @@ class MEMORYSTATUSEX(ctypes.Structure):
                 ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), 
                 ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
 
-# === 内存流媒体服务器 (核心黑科技) ===
+# === 内存流媒体服务器 ===
 class RamHttpHandler(http.server.SimpleHTTPRequestHandler):
-    def log_message(self, format, *args): pass # 静默模式，不打印日志
-
+    def log_message(self, format, *args): pass 
     def do_GET(self):
-        # 获取全局存储的二进制数据
         data = self.server.ram_data
         if not data:
             self.send_error(HTTPStatus.NOT_FOUND, "No data loaded")
             return
-
         file_size = len(data)
         start, end = 0, file_size - 1
-
-        # 解析 Range 头 (实现 Seek 的关键)
         if "Range" in self.headers:
             range_header = self.headers["Range"]
             try:
-                # 格式通常为 bytes=0-1023
                 range_val = range_header.split("=")[1]
                 start_str, end_str = range_val.split("-")
                 if start_str: start = int(start_str)
                 if end_str: end = int(end_str)
             except: pass
-        
-        # 计算长度
         chunk_len = (end - start) + 1
-        
-        # 发送响应头
         self.send_response(HTTPStatus.PARTIAL_CONTENT if "Range" in self.headers else HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
         self.send_header("Content-Length", str(chunk_len))
         self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
-
-        # 发送内存切片
-        try:
-            self.wfile.write(data[start : end + 1])
-        except (ConnectionResetError, BrokenPipeError):
-            pass # 客户端断开是正常的
+        try: self.wfile.write(data[start : end + 1])
+        except (ConnectionResetError, BrokenPipeError): pass
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    daemon_threads = True # 确保主程序退出时子线程也退出
+    daemon_threads = True 
 
 def start_ram_server(ram_data):
-    # 自动分配一个空闲端口 (端口为0时)
     server = ThreadedHTTPServer(('127.0.0.1', 0), RamHttpHandler)
     server.ram_data = ram_data
     port = server.server_address[1]
@@ -189,331 +153,164 @@ def get_free_ram_gb():
 
 def check_ffmpeg():
     try:
-        # 增加 creationflags 防止弹出黑框
         subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
         return True
     except: return False
 
-# === 磁盘类型检测 (修复版：API权威优先，防止缓存欺骗) ===
-import struct
-
-# 缓存检测结果
+# === 磁盘检测工具 ===
 drive_type_cache = {}
-
 def is_drive_ssd(path):
-    """
-    逻辑调整：
-    1. Windows API (DeviceIoControl) 是最高权威。
-       - 如果系统底层说 "有寻道惩罚" (IncursSeekPenalty=True)，那就是 HDD。
-       - 此时直接返回 False，不再进行物理测速（防止被 HDD 的 DRAM 缓存欺骗）。
-    2. 只有当 API 调用失败或无法判断时，才启用 PowerShell 或 Benchmark 兜底。
-    """
     root = os.path.splitdrive(os.path.abspath(path))[0].upper()
     if not root: return False
-    drive_letter = root # 例如 "C:"
-    
-    # 查缓存
-    if drive_letter in drive_type_cache: 
-        return drive_type_cache[drive_letter]
-
-    print(f"[*]正在深度检测磁盘: {drive_letter}")
+    drive_letter = root 
+    if drive_letter in drive_type_cache: return drive_type_cache[drive_letter]
     is_ssd = False
-    api_success = False # 标记 API 是否成功执行
-    
-    # --- 方法 1: Windows API 底层查询 (寻道惩罚) ---
     try:
-        FILE_READ_ATTRIBUTES = 0x80
-        OPEN_EXISTING = 3
-        h_vol = ctypes.windll.kernel32.CreateFileW(
-            f"\\\\.\\{drive_letter}",
-            FILE_READ_ATTRIBUTES,
-            0x00000001 | 0x00000002, 
-            None,
-            OPEN_EXISTING,
-            0,
-            None
-        )
-        
+        h_vol = ctypes.windll.kernel32.CreateFileW(f"\\\\.\\{drive_letter}", 0x80, 0x3, None, 3, 0, None)
         if h_vol != -1:
-            PropertyStandardQuery = 0
-            StorageDeviceSeekPenaltyProperty = 7
-            
             class STORAGE_PROPERTY_QUERY(ctypes.Structure):
-                _fields_ = [("PropertyId", ctypes.c_uint),
-                            ("QueryType", ctypes.c_uint),
-                            ("AdditionalParameters", ctypes.c_byte * 1)]
-            
+                _fields_ = [("PropertyId", ctypes.c_uint), ("QueryType", ctypes.c_uint), ("AdditionalParameters", ctypes.c_byte * 1)]
             query = STORAGE_PROPERTY_QUERY()
-            query.PropertyId = StorageDeviceSeekPenaltyProperty
-            query.QueryType = PropertyStandardQuery
+            query.PropertyId = 7 # StorageDeviceSeekPenaltyProperty
             
             class DEVICE_SEEK_PENALTY_DESCRIPTOR(ctypes.Structure):
-                _fields_ = [("Version", ctypes.c_ulong),
-                            ("Size", ctypes.c_ulong),
-                            ("IncursSeekPenalty", ctypes.c_bool)]
-            
+                _fields_ = [("Version", ctypes.c_ulong), ("Size", ctypes.c_ulong), ("IncursSeekPenalty", ctypes.c_bool)]
             out = DEVICE_SEEK_PENALTY_DESCRIPTOR()
             bytes_returned = ctypes.c_ulong()
-            
-            ret = ctypes.windll.kernel32.DeviceIoControl(
-                h_vol,
-                0x002D1400, # IOCTL_STORAGE_QUERY_PROPERTY
-                ctypes.byref(query), ctypes.sizeof(query),
-                ctypes.byref(out), ctypes.sizeof(out),
-                ctypes.byref(bytes_returned), None
-            )
+            ret = ctypes.windll.kernel32.DeviceIoControl(h_vol, 0x002D1400, ctypes.byref(query), ctypes.sizeof(query),
+                                                         ctypes.byref(out), ctypes.sizeof(out), ctypes.byref(bytes_returned), None)
             ctypes.windll.kernel32.CloseHandle(h_vol)
-            
             if ret:
-                api_success = True
-                if not out.IncursSeekPenalty:
-                    print(f"   [API] 无寻道惩罚 -> 判定为 SSD")
-                    drive_type_cache[drive_letter] = True
-                    return True
-                else:
-                    # [核心修复] API 明确说是 HDD，直接采信，防止被缓存欺骗
-                    print(f"   [API] 存在寻道惩罚 -> 确认为 HDD")
-                    drive_type_cache[drive_letter] = False
-                    return False
-    except Exception as e:
-        print(f"   [API] 检测失败: {e}")
+                is_ssd = not out.IncursSeekPenalty
+                drive_type_cache[drive_letter] = is_ssd
+                return is_ssd
+    except: pass
+    drive_type_cache[drive_letter] = False
+    return False
 
-    # 如果 API 成功执行并返回了结果，上面就已经 return 了。
-    # 能走到这里说明 API 失败了（比如特殊外接盒），必须启用兜底检测。
-
-    # --- 方法 2 & 3: PowerShell 组合拳 ---
-    if not is_ssd:
-        try:
-            cmd = f'Get-Partition -DriveLetter {drive_letter[0]} | Get-Disk | Select-Object MediaType, SpindleSpeed | ConvertTo-Json'
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            res = subprocess.check_output(["powershell", "-Command", cmd], startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW, timeout=3).decode().strip().upper()
-            
-            if '"MEDIATYPE": "SSD"' in res or '"MEDIATYPE": 4' in res:
-                print("   [PS] MediaType 确认为 SSD")
-                is_ssd = True
-            elif not is_ssd:
-                import re
-                speed_match = re.search(r'"SPINDLESPEED":\s*(\d+)', res)
-                if speed_match and int(speed_match.group(1)) == 0:
-                    print("   [PS] 转速为 0 -> 判定为 SSD")
-                    is_ssd = True
-        except: pass
-
-    # --- 方法 4: 物理基准测试 (仅在 API 和 PS 都失效时才运行) ---
-    if not is_ssd:
-        try:
-            # 只有不知道是不是 SSD 的时候才测，避免 HDD 缓存干扰
-            print(f"   [Benchmark] 启动物理测速 (API失效兜底)...")
-            test_dir = os.path.join(drive_letter + "\\", "_SpeedTest_Temp")
-            os.makedirs(test_dir, exist_ok=True)
-            test_file = os.path.join(test_dir, ".probe")
-            
-            # 增大写入量到 64MB 以尝试击穿 HDD 缓存 (虽然不一定管用，但比 4KB 好)
-            # 但最好的办法还是前面 API 没报错
-            with open(test_file, 'wb') as f:
-                f.write(os.urandom(4096)) # 保持小文件以快速检测，但只作为最后手段
-            
-            t_start = time.perf_counter()
-            with open(test_file, 'rb') as f:
-                f.seek(2048); _ = f.read(1)
-            t_end = time.perf_counter()
-            
-            latency = (t_end - t_start) * 1000
-            print(f"   [Benchmark] 延迟: {latency:.4f} ms")
-            
-            if latency < 3.0: is_ssd = True
-            try: os.remove(test_file); os.rmdir(test_dir)
-            except: pass
-        except: pass
-
-    drive_type_cache[drive_letter] = is_ssd
-    print(f"[*] 最终判定 {drive_letter} 为: {'SSD' if is_ssd else 'HDD'}")
-    return is_ssd
-
-# === 新增：检测是否为外接/USB设备 ===
 def is_bus_usb(path):
     try:
         root = os.path.splitdrive(os.path.abspath(path))[0].upper()
-        # 1. 简单检查：如果是可移动磁盘(如U盘)，直接返回 True
-        if ctypes.windll.kernel32.GetDriveTypeW(root + "\\") == 2:
-            return True
-
-        # 2. 深度检查：查询总线类型 (BusType)
-        # BusType 7 = USB, 11 = RAID, 8 = 1394
-        h_vol = ctypes.windll.kernel32.CreateFileW(
-            f"\\\\.\\{root}", 0, 0x1|0x2, None, 3, 0, None
-        )
+        if ctypes.windll.kernel32.GetDriveTypeW(root + "\\") == 2: return True
+        h_vol = ctypes.windll.kernel32.CreateFileW(f"\\\\.\\{root}", 0, 0x3, None, 3, 0, None)
         if h_vol == -1: return False
-        
-        class STORAGE_PROPERTY_QUERY(ctypes.Structure):
-            _fields_ = [("PropertyId", ctypes.c_uint), ("QueryType", ctypes.c_uint), ("AdditionalParameters", ctypes.c_byte * 1)]
-        
         class STORAGE_DEVICE_DESCRIPTOR(ctypes.Structure):
-            _fields_ = [("Version", ctypes.c_ulong), ("Size", ctypes.c_ulong),
-                        ("DeviceType", ctypes.c_byte), ("DeviceTypeModifier", ctypes.c_byte),
-                        ("RemovableMedia", ctypes.c_bool), ("CommandQueueing", ctypes.c_bool),
-                        ("VendorIdOffset", ctypes.c_ulong), ("ProductIdOffset", ctypes.c_ulong),
-                        ("ProductRevisionOffset", ctypes.c_ulong), ("SerialNumberOffset", ctypes.c_ulong),
-                        ("BusType", ctypes.c_int)] # 核心字段
-
-        query = STORAGE_PROPERTY_QUERY()
-        query.PropertyId = 0 # StorageDeviceProperty
-        query.QueryType = 0  # PropertyStandardQuery
-        
+            _fields_ = [("Version", ctypes.c_ulong), ("Size", ctypes.c_ulong), ("DeviceType", ctypes.c_byte), 
+                        ("DeviceTypeModifier", ctypes.c_byte), ("RemovableMedia", ctypes.c_bool), 
+                        ("CommandQueueing", ctypes.c_bool), ("VendorIdOffset", ctypes.c_ulong), 
+                        ("ProductIdOffset", ctypes.c_ulong), ("ProductRevisionOffset", ctypes.c_ulong), 
+                        ("SerialNumberOffset", ctypes.c_ulong), ("BusType", ctypes.c_int)]
         out = STORAGE_DEVICE_DESCRIPTOR()
         bytes_returned = ctypes.c_ulong()
-        
-        ret = ctypes.windll.kernel32.DeviceIoControl(
-            h_vol, 0x002D1400, ctypes.byref(query), ctypes.sizeof(query),
-            ctypes.byref(out), ctypes.sizeof(out), ctypes.byref(bytes_returned), None
-        )
+        query = ctypes.create_string_buffer(12) 
+        ret = ctypes.windll.kernel32.DeviceIoControl(h_vol, 0x002D1400, query, 12, ctypes.byref(out), ctypes.sizeof(out), ctypes.byref(bytes_returned), None)
         ctypes.windll.kernel32.CloseHandle(h_vol)
-        
         if ret:
-            # === 1. 协议白名单 ===
-            if out.BusType in [7, 1, 13]: 
-                return True
-            
-            # === 2. 核心：通用可移动属性检查 ===
-            if out.RemovableMedia:
-                return True
-            
-            # === 3. 针对“固件伪装”的雷电/USB4 硬盘盒的绝杀补丁 ===
-            if out.BusType == 17: # NVMe
-                try:
-                    current_drive = os.path.splitdrive(os.path.abspath(path))[0].upper()
-                    system_drive = os.getenv("SystemDrive", "C:").upper()
-                    if current_drive != system_drive:
-                        return True
-                except: pass
-                
+            if out.BusType in [7, 1, 13]: return True
+            if out.RemovableMedia: return True
         return False
-    except: # <--- 这里是你之前漏掉的部分
-        return False
+    except: return False
 
-# === 核心：统一智能选盘算法 (修复版：源盘扣分 + 外接盘扣分) ===
-def find_best_cache_drive(source_drive_letter=None):
-    # 获取所有可用盘符 (A-Z)
+# === 核心：严格分级选盘算法 ===
+def find_best_cache_drive(source_drive_letter=None, manual_override=None):
+    # 0. 如果用户手动指定了路径，直接检查可用性并返回
+    if manual_override and os.path.exists(manual_override):
+        return manual_override
+
     drives = [f"{chr(i)}:\\" for i in range(65, 91) if os.path.exists(f"{chr(i)}:\\")]
-    
-    candidates = [] # 格式: (分数, 剩余空间, 路径)
-    
+    candidates = []
+
     for root in drives:
-        d_letter = os.path.splitdrive(root)[0].upper()
-        
         try:
-            # 2. 空间检查 (至少预留 15GB)
-            usage = shutil.disk_usage(root)
-            free_gb = usage.free / (1024**3)
-            if free_gb < 15: continue
+            d_letter = os.path.splitdrive(root)[0].upper()
+            total, used, free = shutil.disk_usage(root)
+            free_gb = free / (1024**3)
             
-            # 3. 评分系统
-            score = 0
+            # 基础过滤：剩余空间必须 > 20GB
+            if free_gb < 20: continue
+
             is_system = (d_letter == "C:")
-            is_ssd_detected = is_drive_ssd(root)
-            
-            # 规则A: 只要不是系统盘，基础分 +100 (保护C盘)
-            if not is_system: 
-                score += 100
-            
-            # 规则B: 如果检测到是SSD，额外 +50
-            if is_ssd_detected:
-                score += 50
-            
-            # 规则C: 系统盘如果是SSD，也给点分 (作为最后的保底)
-            if is_system and is_ssd_detected:
-                score += 10
-            
-            # 规则D: 如果是源素材所在的盘，扣 50 分
-            if source_drive_letter and d_letter == source_drive_letter.upper():
-                score -= 50
+            is_ssd = is_drive_ssd(root)
+            is_usb = is_bus_usb(root)
+            is_source = (source_drive_letter and d_letter == source_drive_letter.upper())
 
-            # 规则E: [新增] 如果是外接/雷电硬盘，扣 200 分 (防止选它做缓存)
-            if is_bus_usb(root):
-                score -= 200
-                
-            candidates.append((score, usage.free, root))
-        except: 
-            pass # <--- 这一行非常重要，千万不能漏！
-    
-    # 4. 竞价排名: 先比分数(高优先)，分数相同比剩余空间(大优先)
-    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    
+            # === 分级评分 (数值越大越好) ===
+            # Level 5: 非系统盘 SSD (最完美)
+            # Level 4: 系统盘 SSD (次选，只要空间够)
+            # Level 3: 非源盘 HDD (为了不抢源盘IO)
+            # Level 2: 源盘 HDD (实在没办法了)
+            # Level 1: C盘 HDD (最后的倔强)
+            
+            level = 0
+            if is_ssd and not is_system and not is_usb: level = 5
+            elif is_ssd and is_system: level = 4
+            elif not is_ssd and not is_source and not is_system: level = 3
+            elif not is_ssd and is_source: level = 2
+            elif is_system: level = 1
+
+            candidates.append({
+                "path": root,
+                "level": level,
+                "free": free_gb
+            })
+        except: pass
+
+    # 排序：先看等级(高->低)，等级相同看剩余空间(大->小)
+    candidates.sort(key=lambda x: (x["level"], x["free"]), reverse=True)
+
     if candidates:
-        # 返回冠军盘符
-        return candidates[0][2]
+        return candidates[0]["path"]
     else:
-        # 实在没得选，只能回退到 C 盘
+        # 绝望回退
         return "C:\\"
-
-def get_force_ssd_dir():
-    # 启动时还不知道源文件在哪，所以不扣分，直接找最好的盘显示给用户看
-    best_root = find_best_cache_drive(source_drive_letter=None)
-    path = os.path.join(best_root, "_Ultra_Smart_Cache_")
-    os.makedirs(path, exist_ok=True)
-    return path
 
 # === 组件定义 ===
 class InfinityScope(ctk.CTkCanvas):
     def __init__(self, master, **kwargs):
         super().__init__(master, bg=COLOR_PANEL_RIGHT, highlightthickness=0, **kwargs)
         self.points = []
-        self.display_max = 10.0  # 当前显示的Y轴上限 (用于动画)
-        self.target_max = 10.0   # 目标的Y轴上限
+        self.display_max = 10.0  
+        self.target_max = 10.0   
         self.bind("<Configure>", lambda e: self.draw())
-        # 启动独立渲染循环 (60FPS)
+        self.running = True
         self.animate_loop()
 
     def add_point(self, val):
         self.points.append(val)
         if len(self.points) > 100: self.points.pop(0)
-        # 不再直接调用 draw，而是更新目标值，让 animate_loop 去追赶
         current_data_max = max(self.points) if self.points else 10
-        self.target_max = max(current_data_max, 10) * 1.2  # 留出20%顶部余量
+        self.target_max = max(current_data_max, 10) * 1.2
 
     def animate_loop(self):
-        if self.winfo_exists():
-            # === 核心算法：缓动插值 (Lerp) ===
-            # 让显示值每次只向目标值移动 10% 的距离 -> 形成丝滑的减速效果
+        if self.winfo_exists() and self.running:
             diff = self.target_max - self.display_max
             if abs(diff) > 0.1:
-                self.display_max += diff * 0.1  # 0.1 是阻尼系数，越小越顺滑
-                self.draw() # 只有数值变化时才重绘
-            
-            # 保持约 60FPS 的刷新率
-            self.after(16, self.animate_loop)
+                self.display_max += diff * 0.1 
+                self.draw() 
+            self.after(30, self.animate_loop) # [优化] 降低刷新率至 30ms (约30FPS)，减轻主线程负担
 
     def draw(self):
         self.delete("all")
         w = self.winfo_width()
         h = self.winfo_height()
         if w < 10 or h < 10 or not self.points: return
-
-        # 使用平滑过渡后的 display_max 进行绘图
         scale_y = (h - 20) / self.display_max
-        
-        # 画虚线中轴
         self.create_line(0, h/2, w, h/2, fill="#2a2a2a", dash=(4, 4))
-
         n = len(self.points)
         if n < 2: return
-        
         step_x = w / (n - 1)
         coords = []
         for i, val in enumerate(self.points):
             x = i * step_x
             y = h - (val * scale_y) - 10
             coords.extend([x, y])
-
         if len(coords) >= 4:
-            # width=2, smooth=True 是关键
-            self.create_line(coords, fill=COLOR_CHART_LINE, width=2, smooth=True, capstyle="round", joinstyle="round")
+            self.create_line(coords, fill=COLOR_CHART_LINE, width=2, smooth=True)
 
     def clear(self):
         self.points = []
         self.target_max = 10.0
-        self.display_max = 10.0 # 立即重置显示范围
+        self.display_max = 10.0 
         self.delete("all")
 
 class MonitorChannel(ctk.CTkFrame):
@@ -572,18 +369,32 @@ class TaskCard(ctk.CTkFrame):
         self.source_mode = "PENDING"
         self.filepath = filepath
         
-        # [修改] 将 Label 赋值给 self.lbl_index 以便后续修改
         self.lbl_index = ctk.CTkLabel(self, text=f"{index:02d}", font=("Impact", 20), text_color="#555")
-        self.lbl_index.grid(row=0, column=0, rowspan=2, padx=15)
+        self.lbl_index.grid(row=0, column=0, rowspan=2, padx=(10, 5))
         
-        ctk.CTkLabel(self, text=os.path.basename(filepath), font=("微软雅黑", 12, "bold"), text_color="#EEE", anchor="w").grid(row=0, column=1, sticky="w", padx=5, pady=(8,0))
+        name_frame = ctk.CTkFrame(self, fg_color="transparent")
+        name_frame.grid(row=0, column=1, sticky="w", padx=5, pady=(8,0))
+        
+        ctk.CTkLabel(name_frame, text=os.path.basename(filepath), font=("微软雅黑", 12, "bold"), text_color="#EEE", anchor="w").pack(side="left")
+        
+        # [新增] 打开文件夹按钮
+        self.btn_open = ctk.CTkButton(self, text="📂", width=30, height=24, fg_color="#444", hover_color="#555", 
+                                      font=("Segoe UI Emoji", 12), command=self.open_location)
+        self.btn_open.grid(row=0, column=2, padx=10, pady=(8,0), sticky="e")
+        
         self.lbl_status = ctk.CTkLabel(self, text="等待处理", font=("Arial", 10), text_color="#888", anchor="w")
         self.lbl_status.grid(row=1, column=1, sticky="w", padx=5, pady=(0,8))
+        
         self.progress = ctk.CTkProgressBar(self, height=4, corner_radius=0, progress_color=COLOR_ACCENT, fg_color="#444")
         self.progress.set(0)
         self.progress.grid(row=2, column=0, columnspan=3, sticky="ew")
 
-    # [新增] 用于更新序号的方法
+    def open_location(self):
+        try:
+            # select, 后面跟路径可以选中文件
+            subprocess.run(['explorer', '/select,', os.path.normpath(self.filepath)])
+        except: pass
+
     def update_index(self, new_index):
         try:
             if self.winfo_exists():
@@ -609,42 +420,22 @@ class TaskCard(ctk.CTkFrame):
 
 # === 主程序 ===
 class UltraEncoderApp(DnDWindow):
-    # [新增] 自动滚动到指定任务卡片
     def scroll_to_card(self, widget):
-        """修复后的自动滚动逻辑"""
+        # [优化] 自动滚动逻辑
         try:
-            # 1. 强制刷新布局，确保坐标是最新的
             self.scroll.update_idletasks()
-            
-            # 2. 获取目标控件相对于滚动列表顶部的 Y 坐标
-            # widget.winfo_y() 获取的是在 parent 里的位置
-            item_y = widget.winfo_y()
-            item_height = widget.winfo_height()
-            
-            # 3. 获取滚动区域的总高度
-            # self.scroll.winfo_children()[0] 通常是那个被拉长的内部 Frame
-            inner_frame = self.scroll.winfo_children()[0]
-            total_height = inner_frame.winfo_height()
-            
-            # 4. 获取可视窗口的高度
+            widget_y = widget.winfo_y()
+            parent_height = self.scroll.winfo_children()[0].winfo_height()
             view_height = self.scroll.winfo_height()
-            
-            if total_height > view_height and total_height > 0:
-                # 5. 计算目标位置 (将卡片置于视口约 20% - 30% 的位置，视觉上最舒适)
-                # 如果 item_y 很小（刚开始），target_pos 会是 0
-                target_pos = (item_y - view_height * 0.25) / (total_height - view_height)
-                
-                # 限制在 0.0 到 1.0 之间
-                target_pos = max(0.0, min(1.0, target_pos))
-                
-                # 6. 执行滚动
-                self.scroll._parent_canvas.yview_moveto(target_pos)
-        except Exception as e: 
-            print(f"Scroll Fix Error: {e}")
+            if parent_height > view_height:
+                # 将该卡片置于视图顶部 20% 处
+                target = (widget_y - (view_height * 0.2)) / parent_height
+                self.scroll._parent_canvas.yview_moveto(max(0, min(1, target)))
+        except: pass
     
     def __init__(self):
         super().__init__()
-        self.title("Ultra Encoder") # 中文标题
+        self.title("Ultra Encoder v62 (14900K Optimized)")
         self.geometry("1300x900")
         self.configure(fg_color=COLOR_BG_MAIN)
         self.minsize(1200, 850) 
@@ -667,91 +458,57 @@ class UltraEncoderApp(DnDWindow):
         self.executor = ThreadPoolExecutor(max_workers=16) 
         self.submitted_tasks = set() 
         self.temp_dir = ""
+        self.manual_cache_path = None # [新增] 手动缓存路径
         self.temp_files = set()
         
+        # [新增] 计数器状态
+        self.total_tasks_run = 0
+        self.finished_tasks_count = 0
+
         self.setup_ui()
-        # 【新增】全局防降速
-        disable_power_throttling() # 对主界面
-        set_execution_state(True)  # 阻止系统休眠
+        disable_power_throttling() 
+        set_execution_state(True)  
         
         self.after(200, self.sys_check)
-        
         if HAS_DND:
             self.drop_target_register(DND_FILES)
             self.dnd_bind('<<Drop>>', self.drop_file)
 
-    # === 新增：颜色插值动画函数 (修复版：增加防崩溃校验) ===
     def animate_text_change(self, button, new_text, new_fg_color=None):
-        """让按钮文字通过 淡出 -> 切换 -> 淡入 实现丝滑过渡"""
-        
-        # 1. 定义颜色转换工具
         def hex_to_rgb(hex_col):
-            # 安全校验：如果是空值或非字符串，直接返回白色/黑色作为默认
-            if not hex_col or not isinstance(hex_col, str):
-                return (255, 255, 255) # 默认白
-            
-            hex_col = hex_col.lstrip('#')
-            if len(hex_col) != 6: 
-                return (255, 255, 255) # 格式不对也返回白
-                
-            try:
-                return tuple(int(hex_col[i:i+2], 16) for i in (0, 2, 4))
-            except:
-                return (255, 255, 255)
+            if not hex_col or not isinstance(hex_col, str) or len(hex_col) != 7: return (255, 255, 255)
+            return tuple(int(hex_col[i:i+2], 16) for i in (1, 3, 5))
+        def rgb_to_hex(rgb): return '#%02x%02x%02x' % rgb
 
-        def rgb_to_hex(rgb):
-            return '#%02x%02x%02x' % (int(rgb[0]), int(rgb[1]), int(rgb[2]))
-
-        # 获取当前文字颜色 (默认黑色或配置色)
-        # CustomTkinter 内部有时会返回空字符串，这里要做多重防御
-        start_hex = "#FFFFFF" # 默认兜底色
-        try:
-            raw_col = button._text_color
-            if isinstance(raw_col, (list, tuple)):
-                # 取决于当前模式，一般取第二个(Dark模式)
-                start_hex = raw_col[1] if len(raw_col) > 1 else raw_col[0]
-            elif isinstance(raw_col, str) and raw_col.strip() != "":
-                start_hex = raw_col
-        except: pass
+        try: start_hex = button._text_color if isinstance(button._text_color, str) else button._text_color[1]
+        except: start_hex = "#FFFFFF"
         
-        bg_hex = COLOR_ACCENT # 按钮当前的背景色，用于融合
-        
-        # 动画步骤
-        steps = 10
-        delay = 15 # ms
-
-        # 第一阶段：淡出 (文字色 -> 背景色)
-        c1 = hex_to_rgb(start_hex)
-        c2 = hex_to_rgb(bg_hex)
+        bg_hex = COLOR_ACCENT 
+        steps, delay = 10, 15
+        c1, c2 = hex_to_rgb(start_hex), hex_to_rgb(bg_hex)
         
         def fade_out(step):
             if step <= steps:
-                r = c1[0] + (c2[0] - c1[0]) * (step / steps)
-                g = c1[1] + (c2[1] - c1[1]) * (step / steps)
-                b = c1[2] + (c2[2] - c1[2]) * (step / steps)
+                r = int(c1[0] + (c2[0] - c1[0]) * (step / steps))
+                g = int(c1[1] + (c2[1] - c1[1]) * (step / steps))
+                b = int(c1[2] + (c2[2] - c1[2]) * (step / steps))
                 try: button.configure(text_color=rgb_to_hex((r,g,b)))
                 except: pass
                 self.after(delay, lambda: fade_out(step + 1))
             else:
-                # 切换文字和颜色
                 button.configure(text=new_text)
                 if new_fg_color: button.configure(fg_color=new_fg_color)
-                # 开始淡入
                 fade_in(0)
-
-        # 第二阶段：淡入 (背景色 -> 目标文字色 默认为黑)
-        # 这里的 c1 改为目标色，通常按钮文字是黑色或白色
-        target_text_rgb = (0, 0, 0) # 目标设为黑色，显得更有力
         
+        target_text_rgb = (0, 0, 0)
         def fade_in(step):
             if step <= steps:
-                r = c2[0] + (target_text_rgb[0] - c2[0]) * (step / steps)
-                g = c2[1] + (target_text_rgb[1] - c2[1]) * (step / steps)
-                b = c2[2] + (target_text_rgb[2] - c2[2]) * (step / steps)
+                r = int(c2[0] + (target_text_rgb[0] - c2[0]) * (step / steps))
+                g = int(c2[1] + (target_text_rgb[1] - c2[1]) * (step / steps))
+                b = int(c2[2] + (target_text_rgb[2] - c2[2]) * (step / steps))
                 try: button.configure(text_color=rgb_to_hex((r,g,b)))
                 except: pass
                 self.after(delay, lambda: fade_in(step + 1))
-        
         fade_out(0)
 
     def drop_file(self, event):
@@ -760,86 +517,55 @@ class UltraEncoderApp(DnDWindow):
 
     def add_list(self, files):
         with self.queue_lock:
-            # 1. 预先计算现有文件的“规范化绝对路径”集合
-            # normpath 会把 C:/A/b.mp4 统一变成 C:\A\b.mp4，确保比对精准
             existing_paths = set(os.path.normpath(os.path.abspath(f)) for f in self.file_queue)
-            
             new_added = False
-            skipped_count = 0 # 记录跳过的重复项
-
             for f in files:
-                # 获取待添加文件的规范化路径
                 f_norm = os.path.normpath(os.path.abspath(f))
-                
-                # === 核心去重逻辑 ===
-                # 如果规范化路径已存在，说明是完全相同的文件 -> 跳过
-                # 如果文件名相同但文件夹不同，路径字符串自然不同 -> 保留
-                if f_norm in existing_paths:
-                    skipped_count += 1
-                    continue
-                
-                # 扩展名检查
+                if f_norm in existing_paths: continue
                 if f.lower().endswith(('.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv')):
                     self.file_queue.append(f)
-                    existing_paths.add(f_norm) # 立即加入集合，防止本次拖入的一批文件里有重复
-                    
-                    # 创建卡片 (序号先填0，稍后统一刷新)
+                    existing_paths.add(f_norm) 
                     if f not in self.task_widgets:
                         card = TaskCard(self.scroll, 0, f) 
                         self.task_widgets[f] = card
                     new_added = True
             
-            # (可选) 可以在控制台输出跳过信息，或者弹窗提示
-            if skipped_count > 0:
-                print(f"[System] 已智能过滤 {skipped_count} 个重复任务。")
-            
             if not new_added: return
-
-            # 2. [核心功能] 按照文件大小排序 (从小到大)
             def get_file_size(path):
                 try: return os.path.getsize(path)
                 except: return float('inf') 
-            
             self.file_queue.sort(key=get_file_size)
-
-            # 3. 刷新 UI 列表顺序
             for i, f in enumerate(self.file_queue):
                 if f in self.task_widgets:
                     card = self.task_widgets[f]
                     card.pack_forget()
                     card.pack(fill="x", pady=4)
                     card.update_index(i + 1)
+            
+            # [新增] 如果正在运行，更新总数显示
+            if self.running:
+                self.update_run_status()
+
+    # [新增] 更新运行按钮状态
+    def update_run_status(self):
+        if not self.running: return
+        total = len(self.file_queue)
+        # 当前进行的序号 = 已完成 + 1 (防止显示 0/20)
+        current = min(self.finished_tasks_count + 1, total)
+        if current > total and total > 0: current = total
+        
+        txt = f"压制中 ({current}/{total})"
+        self.btn_run.configure(text=txt)
 
     def apply_system_priority(self, level):
         mapping = {"常规": PRIORITY_NORMAL, "优先": PRIORITY_ABOVE, "极速": PRIORITY_HIGH}
         p_val = mapping.get(level, PRIORITY_ABOVE)
-        
-        # 1. 修改主程序 (UI) 优先级
         try:
             pid = os.getpid()
             handle = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, pid)
             ctypes.windll.kernel32.SetPriorityClass(handle, p_val)
             ctypes.windll.kernel32.CloseHandle(handle)
         except: pass
-
-        # 2. 实时遍历并修改所有正在运行的 FFmpeg 子进程
-        count = 0
-        for proc in self.active_procs:
-            if proc.poll() is None: # 确保进程还在运行
-                try:
-                    # 获取子进程句柄并设置优先级
-                    h_sub = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, proc.pid)
-                    if h_sub:
-                        ctypes.windll.kernel32.SetPriorityClass(h_sub, p_val)
-                        ctypes.windll.kernel32.CloseHandle(h_sub)
-                        count += 1
-                except: pass
-        
-        # 状态栏反馈
-        if count > 0:
-            self.set_status_bar(f"优先级: {level} (已实时应用到 {count} 个任务)")
-        else:
-            self.set_status_bar(f"系统优先级: {level} (将应用于新任务)")
     
     def on_closing(self):
         if self.running:
@@ -850,73 +576,58 @@ class UltraEncoderApp(DnDWindow):
         self.kill_all_procs()
         self.clean_junk()
         self.destroy()
-        set_execution_state(False) # 【新增】恢复系统休眠策略
-        self.stop_flag = True
+        set_execution_state(False)
         os._exit(0)
         
     def kill_all_procs(self):
         for p in self.active_procs:
-            try: 
-                p.terminate()
-                p.kill()
+            try: p.terminate(); p.kill()
             except: pass
-        try:
-            subprocess.run(["taskkill", "/F", "/IM", "ffmpeg.exe"], creationflags=subprocess.CREATE_NO_WINDOW)
+        try: subprocess.run(["taskkill", "/F", "/IM", "ffmpeg.exe"], creationflags=subprocess.CREATE_NO_WINDOW)
         except: pass
 
     def sys_check(self):
         if not check_ffmpeg():
-            messagebox.showerror("错误", "找不到 FFmpeg！请确保已安装并添加到系统 PATH。")
+            messagebox.showerror("错误", "找不到 FFmpeg！")
             return
         threading.Thread(target=self.scan_disk, daemon=True).start()
         threading.Thread(target=self.smart_preload_worker, daemon=True).start()
-        # === [新增] 启动 GPU 监控线程 ===
         threading.Thread(target=self.gpu_monitor_loop, daemon=True).start()
         self.update_monitor_layout()
 
-    # === [新增] GPU 监控线程 ===
     def gpu_monitor_loop(self):
         while not self.stop_flag:
             try:
-                # 使用 nvidia-smi 查询功率(power.draw)和温度(temperature.gpu)
-                # creationflags 防止弹出黑框
                 cmd = ["nvidia-smi", "--query-gpu=power.draw,temperature.gpu", "--format=csv,noheader,nounits"]
                 si = subprocess.STARTUPINFO()
                 si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                
-                output = subprocess.check_output(
-                    cmd, encoding="utf-8", startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW
-                ).strip()
-                
-                # output 格式通常为 "125.5, 60"
+                output = subprocess.check_output(cmd, encoding="utf-8", startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW).strip()
                 if output:
                     p_str, t_str = output.split(",")
                     power = float(p_str)
                     temp = int(t_str)
-                    
-                    # 动态颜色逻辑：温度高了变色
-                    color = "#555555" # 默认灰
-                    if temp > 75: color = COLOR_ERROR      # 红 (过热)
-                    elif temp > 60: color = COLOR_SSD_CACHE # 橙 (负载高)
-                    elif power > 50: color = COLOR_SUCCESS  # 绿 (工作中有负载)
-                    
-                    # 更新 UI
-                    text = f"GPU: {power:.1f}W | {temp}°C"
-                    self.after(0, lambda t=text, c=color: self.lbl_gpu.configure(text=t, text_color=c))
-                    
-            except Exception:
-                # 如果没有 N 卡或查询失败，保持静默即可
-                pass
-            
-            time.sleep(0.5)
+                    color = "#555555"
+                    if temp > 75: color = COLOR_ERROR      
+                    elif temp > 60: color = COLOR_SSD_CACHE 
+                    elif power > 50: color = COLOR_SUCCESS  
+                    self.after(0, lambda t=f"GPU: {power:.1f}W | {temp}°C", c=color: self.lbl_gpu.configure(text=t, text_color=c))
+            except: pass
+            time.sleep(1) # [优化] 降低 GPU 监控频率，无须过快
 
     def scan_disk(self):
-        path = get_force_ssd_dir()
-        self.temp_dir = path
-        self.after(0, lambda: self.btn_cache.configure(text=f"缓存池: {path}"))
+        # 初始扫描
+        path = find_best_cache_drive(manual_override=self.manual_cache_path)
+        cache_dir = os.path.join(path, "_Ultra_Smart_Cache_")
+        os.makedirs(cache_dir, exist_ok=True)
+        self.temp_dir = cache_dir
+        self.after(0, lambda: self.btn_cache.configure(text=f"缓存池: {path} (点击修改)"))
 
-    def set_status_bar(self, text):
-        pass # [修改] 界面元素已移除，此函数不再执行任何操作
+    # [新增] 手动选择缓存池
+    def select_cache_folder(self):
+        d = filedialog.askdirectory(title="选择缓存盘 (SSD 优先)")
+        if d:
+            self.manual_cache_path = d
+            self.scan_disk() # 刷新
 
     def setup_ui(self):
         self.grid_columnconfigure(0, weight=0, minsize=320) 
@@ -929,11 +640,11 @@ class UltraEncoderApp(DnDWindow):
         
         l_head = ctk.CTkFrame(left, fg_color="transparent")
         l_head.pack(fill="x", padx=20, pady=(25, 10))
-        # [修改] 仅保留主标题
         ctk.CTkLabel(l_head, text="ULTRA ENCODER", font=("Impact", 26), text_color="#FFF").pack(anchor="w")
         
         self.btn_cache = ctk.CTkButton(left, text="正在检测磁盘...", fg_color="#252525", hover_color="#333", 
-                                     text_color="#AAA", font=("Consolas", 10), height=28, corner_radius=14, command=self.open_cache)
+                                     text_color="#AAA", font=("Consolas", 10), height=28, corner_radius=14, 
+                                     command=self.select_cache_folder) # [修改] 绑定选择函数
         self.btn_cache.pack(fill="x", padx=20, pady=(5, 5))
         self.btn_ram = ctk.CTkButton(left, text="内存监控中...", fg_color="#252525", hover_color="#333", 
                                      text_color="#AAA", font=("Consolas", 10), height=28, corner_radius=14, state="disabled")
@@ -1034,28 +745,22 @@ class UltraEncoderApp(DnDWindow):
         file_size = os.path.getsize(src_path)
         file_size_gb = file_size / (1024**3)
         
-        # 1. 磁盘与传输通道检测
         is_ssd = is_drive_ssd(src_path)
         is_external = is_bus_usb(src_path)
         
-        # 逻辑调整：只有 (是SSD) 且 (不是外接设备) 才允许直读
-        # 如果是外接SSD，因为USB传输的不稳定性，强制走内存/缓存
         if is_ssd and not is_external:
             self.after(0, lambda: [widget.set_status("就绪 (SSD直读)", COLOR_DIRECT, STATUS_READY)])
             widget.source_mode = "DIRECT"
             return True
         elif is_ssd and is_external:
-            print(f"[Policy] Detected External SSD ({src_path}). Forcing RAM/Cache for stability.")
-            # 不返回，继续向下执行，进入 RAM/SSD 缓存流程
+            pass # 外接 SSD 强制缓存
 
-        # 2. RAM 缓存逻辑 (带进度条修复版)
         free_ram = get_free_ram_gb()
         available_for_cache = free_ram - SAFE_RAM_RESERVE
 
         if available_for_cache > file_size_gb and file_size_gb < MAX_RAM_LOAD_GB:
             self.after(0, lambda: [widget.set_status("📥 载入内存中...", COLOR_RAM, STATUS_CACHING), widget.set_progress(0, COLOR_RAM)])
             try:
-                # 分块读取，每读 64MB 更新一次进度
                 chunk_size = 64 * 1024 * 1024 
                 data_buffer = bytearray()
                 read_len = 0
@@ -1067,21 +772,17 @@ class UltraEncoderApp(DnDWindow):
                         if not chunk: break
                         data_buffer.extend(chunk)
                         read_len += len(chunk)
-                        
                         if file_size > 0:
                             prog = read_len / file_size
                             self.after(0, lambda p=prog: widget.set_progress(p, COLOR_READING))
                 
                 widget.ram_data = bytes(data_buffer) 
-                # [已应用新颜色] 薄荷绿状态
                 self.after(0, lambda: [widget.set_status("就绪 (内存加速)", COLOR_READY_RAM, STATUS_READY), widget.set_progress(1, COLOR_READY_RAM)])
                 widget.source_mode = "RAM"
                 return True
-            except Exception as e: 
-                print(f"RAM Load Failed: {e}")
+            except Exception: 
                 widget.clean_memory()
 
-        # 3. SSD 缓存逻辑
         self.after(0, lambda: [widget.set_status("📥 写入缓存...", COLOR_SSD_CACHE, STATUS_CACHING), widget.set_progress(0, COLOR_SSD_CACHE)])
         try:
             fname = os.path.basename(src_path)
@@ -1171,7 +872,6 @@ class UltraEncoderApp(DnDWindow):
     def process(self, input_file):
         if self.stop_flag: return
         
-        # === 1. 获取线程槽位 ===
         my_slot_idx = None
         while my_slot_idx is None and not self.stop_flag:
             with self.slot_lock:
@@ -1184,12 +884,12 @@ class UltraEncoderApp(DnDWindow):
         
         # [功能] 自动滚动到当前任务
         self.after(0, lambda: self.scroll_to_card(card))
+        # [功能] 更新开始按钮文字
+        self.after(0, self.update_run_status)
         
-        # 等待缓存完成
         while card.status_code == STATUS_CACHING and not self.stop_flag: 
             time.sleep(0.5)
 
-        # 确保缓存逻辑执行
         if card.source_mode == "PENDING":
             self.read_lock.acquire()
             try:
@@ -1202,43 +902,33 @@ class UltraEncoderApp(DnDWindow):
             with self.slot_lock: self.available_indices.append(my_slot_idx); self.available_indices.sort()
             return
 
-        # === 2. 准备阶段 ===
         max_retries = 1 
         current_try = 0
         success = False
         output_log = []
         ram_server = None 
         
-        # [核心] 磁盘智能选择 (应用扣分策略)
         fname = os.path.basename(input_file)
         name, ext = os.path.splitext(fname)
         codec_sel = self.codec_var.get()
         suffix = "_H265" if "H.265" in codec_sel else "_H264"
         final_target_file = os.path.join(os.path.dirname(input_file), f"{name}{suffix}{ext}")
         
-        # 获取源文件所在盘符 (例如 "D:")
-        src_drive = os.path.splitdrive(os.path.abspath(input_file))[0].upper()
-        
-        # 调用核心算法寻找最佳缓存盘 (传入源盘符以进行扣分)
-        best_cache_root = find_best_cache_drive(source_drive_letter=src_drive)
+        # 使用新的严格选盘逻辑
+        best_cache_root = find_best_cache_drive(source_drive_letter=os.path.splitdrive(input_file)[0], manual_override=self.manual_cache_path)
         best_cache_dir = os.path.join(best_cache_root, "_Ultra_Smart_Cache_")
         os.makedirs(best_cache_dir, exist_ok=True)
+        self.temp_dir = best_cache_dir # 更新全局 temp_dir 供后续使用
         
-        # [UI] 实时更新显示的缓存池位置，让您看到它选了哪个盘
-        self.after(0, lambda: self.btn_cache.configure(text=f"缓存池: {best_cache_dir}"))
-        
-        # 确定临时文件路径 (强制走缓存，分离IO)
         temp_name = f"TEMP_{int(time.time())}_{name}{suffix}{ext}"
         working_output_file = os.path.join(best_cache_dir, temp_name)
         need_move_back = True
 
-        # === 3. 压制循环 ===
         while current_try <= max_retries and not self.stop_flag:
             output_log.clear()
             using_gpu = self.gpu_var.get()
             mode_label = {"DIRECT": "SSD直读", "RAM": "内存加速", "SSD_CACHE": "缓存加速"}.get(card.source_mode, "未知")
             
-            # [UI] 状态文案
             status_text = f"▶️ 压制中 ({mode_label})"
             if current_try > 0: status_text = f"⚠️ 重试中 (CPU)..."
             
@@ -1248,22 +938,18 @@ class UltraEncoderApp(DnDWindow):
             gpu_flag = "NVENC" if using_gpu else "CPU"
             self.after(0, lambda: ch_ui.activate(fname, f"{tag} | {gpu_flag}"))
             
-            # 构建输入源
             input_arg = input_file
             if card.source_mode == "RAM":
                 try:
                     if not ram_server:
                         ram_server, port, _ = start_ram_server(card.ram_data)
                     input_arg = f"http://127.0.0.1:{port}/video{ext}"
-                    print(f"Memory Streaming at: {input_arg}")
-                except Exception as e:
-                    print(f"Server Error: {e}")
+                except:
                     card.source_mode = "DIRECT"
                     input_arg = input_file
             elif card.source_mode == "SSD_CACHE": 
                 input_arg = card.ssd_cache_path
             
-            # 构建命令
             v_codec = "hevc_nvenc" if "H.265" in codec_sel else "h264_nvenc"
             if not using_gpu: v_codec = "libx265" if "H.265" in codec_sel else "libx264"
             
@@ -1275,7 +961,6 @@ class UltraEncoderApp(DnDWindow):
             else:
                 cmd.extend(["-crf", str(self.crf_var.get()), "-preset", "medium"])
             
-            # 关键参数: 机器可读进度日志
             cmd.extend(["-c:a", "copy", "-progress", "pipe:1", "-nostats", working_output_file])
             
             dur_file = input_file 
@@ -1287,24 +972,18 @@ class UltraEncoderApp(DnDWindow):
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=si)
             self.active_procs.append(proc)
             
-            # 尝试应用优先级
             try:
-                # 1. 设置优先级 (原代码已有，保留)
                 p_val = {"常规": PRIORITY_NORMAL, "优先": PRIORITY_ABOVE, "极速": PRIORITY_HIGH}.get(self.priority_var.get(), PRIORITY_ABOVE)
                 h_sub = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, proc.pid)
                 if h_sub:
                     ctypes.windll.kernel32.SetPriorityClass(h_sub, p_val)
-                    
-                    # 2. 【新增】强制对 FFmpeg 子进程关闭电源节流/效率模式
                     disable_power_throttling(h_sub)
-                    
                     ctypes.windll.kernel32.CloseHandle(h_sub)
             except: pass
 
             start_t = time.time()
-            last_upd = 0
+            last_ui_update_time = 0 # [核心优化] UI 更新节流阀
             
-            # 日志解析
             current_fps = 0
             for line in proc.stdout:
                 if self.stop_flag: break
@@ -1321,24 +1000,25 @@ class UltraEncoderApp(DnDWindow):
                             except: pass
                         elif key == "out_time_us":
                             try:
-                                us = int(value)
-                                current_sec = us / 1000000.0
-                                if duration > 0:
-                                    prog = current_sec / duration
-                                    if time.time() - last_upd > 0.1:
-                                        elap = time.time() - start_t
+                                # [核心优化] 限制 UI 刷新频率，防止 14900K 刷爆主线程
+                                now = time.time()
+                                if now - last_ui_update_time > 0.15: # 限制为每 150ms 刷新一次
+                                    us = int(value)
+                                    current_sec = us / 1000000.0
+                                    if duration > 0:
+                                        prog = current_sec / duration
+                                        elap = now - start_t
                                         eta_sec = (elap / prog - elap) if prog > 0.01 else 0
                                         eta = f"{int(eta_sec//60):02d}:{int(eta_sec%60):02d}"
                                         self.after(0, lambda p=prog: card.set_progress(p, COLOR_ACCENT))
                                         self.after(0, lambda f=current_fps, p=prog, e=eta: ch_ui.update_data(f, p, e))
-                                        last_upd = time.time()
+                                    last_ui_update_time = now
                             except: pass
                 except: continue
             
             proc.wait()
             if proc in self.active_procs: self.active_procs.remove(proc)
             
-            # 停止检查
             if self.stop_flag: 
                 if ram_server: ram_server.shutdown(); ram_server.server_close()
                 card.clean_memory()
@@ -1348,7 +1028,6 @@ class UltraEncoderApp(DnDWindow):
                 with self.slot_lock: self.available_indices.append(my_slot_idx); self.available_indices.sort()
                 return 
 
-            # 成功判定
             if proc.returncode == 0:
                 if os.path.exists(working_output_file) and os.path.getsize(working_output_file) > 500*1024:
                     success = True
@@ -1356,9 +1035,7 @@ class UltraEncoderApp(DnDWindow):
                 else:
                     output_log.append(f"[System Error] File too small: {working_output_file}")
             
-            # 自动降级重试 (GPU -> CPU)
             if not success and using_gpu and current_try < max_retries:
-                output_log.append("[Auto-Fix] GPU failed. Switching to CPU.")
                 self.gpu_var.set(False)
                 current_try += 1
                 time.sleep(1)
@@ -1369,10 +1046,8 @@ class UltraEncoderApp(DnDWindow):
             else:
                 break 
 
-        # === 4. 收尾阶段 ===
         if ram_server: ram_server.shutdown(); ram_server.server_close()
 
-        # 搬运回写 (Move Back)
         if success and need_move_back:
             try:
                 self.after(0, lambda: card.set_status("📦 回写硬盘中...", COLOR_MOVING, STATUS_RUN))
@@ -1391,8 +1066,8 @@ class UltraEncoderApp(DnDWindow):
         self.after(0, ch_ui.reset)
         with self.slot_lock: self.available_indices.append(my_slot_idx); self.available_indices.sort()
         
-        # 最终状态更新
         if success:
+             self.finished_tasks_count += 1 # [新增] 完成计数+1
              orig_sz = os.path.getsize(input_file)
              if os.path.exists(final_target_file):
                  new_sz = os.path.getsize(final_target_file)
@@ -1408,6 +1083,7 @@ class UltraEncoderApp(DnDWindow):
                      messagebox.showerror(f"任务失败: {fname}", f"FFmpeg 报错日志 (最后30行):\n\n{err_msg}")
                  self.after(0, show_err)
 
+        self.after(0, self.update_run_status) # 任务结束更新按钮状态
         with self.queue_lock:
             if input_file in self.submitted_tasks: self.submitted_tasks.remove(input_file)
 
@@ -1415,11 +1091,10 @@ class UltraEncoderApp(DnDWindow):
         if not self.file_queue: return
         self.running = True
         self.stop_flag = False
+        self.finished_tasks_count = 0 # 重置计数
         
-        # === 修改：使用丝滑动画切换文字 ===
-        # 原代码: self.btn_run.configure(state="disabled", text="引擎运行中...")
-        self.btn_run.configure(state="disabled") # 先禁用防止连点
-        self.animate_text_change(self.btn_run, "▶ 压制进行中...") 
+        self.btn_run.configure(state="disabled") 
+        self.animate_text_change(self.btn_run, f"压制中 (1/{len(self.file_queue)})") 
         
         self.btn_stop.configure(state="normal")
         self.update_monitor_layout()
@@ -1443,8 +1118,6 @@ class UltraEncoderApp(DnDWindow):
         self.btn_run.configure(state="normal", text="启动引擎")
         self.btn_stop.configure(state="disabled")
 
-    def open_cache(self):
-        if self.temp_dir: os.startfile(self.temp_dir)
     def add_file(self):
         f_list = filedialog.askopenfilenames()
         self.add_list(f_list)
@@ -1463,6 +1136,9 @@ class UltraEncoderApp(DnDWindow):
         self.task_widgets.clear()
         self.file_queue.clear()
         self.submitted_tasks.clear()
+        self.total_tasks_run = 0
+        self.finished_tasks_count = 0
+        self.btn_run.configure(text="启动引擎")
 
     def get_dur(self, f):
         try:
