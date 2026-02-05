@@ -929,31 +929,38 @@ class UltraEncoderApp(DnDWindow):
             using_gpu = self.gpu_var.get()
             mode_label = {"DIRECT": "SSD直读", "RAM": "内存加速", "SSD_CACHE": "缓存加速"}.get(card.source_mode, "未知")
             
-            status_text = f"▶️ 压制中 ({mode_label})"
-            if current_try > 0: status_text = f"⚠️ 重试中 (CPU)..."
+            # ... (在 process 函数内，while 循环里) ...
             
-            self.after(0, lambda: [card.set_status(status_text, COLOR_ACCENT, STATUS_RUN), card.set_progress(0, COLOR_ACCENT)])
+            # [修改] 步骤 1: 智能判断解码方式
+            # 注意：如果是 RAM 模式，我们依然分析原文件(input_file)来决定解码策略，
+            # 因为数据流是一样的。
+            decode_flags, strategy_log = self.get_smart_decode_args(input_file)
             
-            tag = "HEVC" if "H.265" in codec_sel else "AVC"
-            gpu_flag = "NVENC" if using_gpu else "CPU"
-            self.after(0, lambda: ch_ui.activate(fname, f"{tag} | {gpu_flag}"))
+            # 更新 UI 显示当前解码策略，让用户知道
+            self.after(0, lambda: card.set_status(f"▶️ {strategy_log}", COLOR_ACCENT, STATUS_RUN))
             
-            input_arg = input_file
+            # [修改] 步骤 2: 构建输入源参数
+            input_arg_final = input_file
             if card.source_mode == "RAM":
                 try:
                     if not ram_server:
                         ram_server, port, _ = start_ram_server(card.ram_data)
-                    input_arg = f"http://127.0.0.1:{port}/video{ext}"
+                    input_arg_final = f"http://127.0.0.1:{port}/video{ext}"
                 except:
-                    card.source_mode = "DIRECT"
-                    input_arg = input_file
+                    input_arg_final = input_file
             elif card.source_mode == "SSD_CACHE": 
-                input_arg = card.ssd_cache_path
+                input_arg_final = card.ssd_cache_path
+
+            # [修改] 步骤 3: 组装最终命令
+            cmd = ["ffmpeg", "-y"]
             
-            v_codec = "hevc_nvenc" if "H.265" in codec_sel else "h264_nvenc"
-            if not using_gpu: v_codec = "libx265" if "H.265" in codec_sel else "libx264"
+            # 插入智能解码参数 (必须在 -i 之前)
+            cmd.extend(decode_flags)
             
-            cmd = ["ffmpeg", "-y", "-i", input_arg, "-c:v", v_codec]
+            cmd.extend(["-i", input_arg_final])
+            cmd.extend(["-c:v", v_codec])
+            
+            # ... (后续参数保持不变: -pix_fmt yuv420p 等) ...
             
             if using_gpu:
                 cmd.extend(["-pix_fmt", "yuv420p", "-rc", "vbr", "-cq", str(self.crf_var.get()), 
@@ -1130,15 +1137,98 @@ class UltraEncoderApp(DnDWindow):
         self.after(100, self._do_clear)
 
     def _do_clear(self):
+        # 1. 销毁所有任务卡片
         for w in list(self.task_widgets.values()): 
             w.clean_memory()
             w.destroy()
         self.task_widgets.clear()
+        
+        # 2. 清空数据队列
         self.file_queue.clear()
         self.submitted_tasks.clear()
+        self.temp_files.clear() # 顺便清空记录的临时文件路径
+        
+        # 3. [关键] 重置所有计数器和状态标志
         self.total_tasks_run = 0
         self.finished_tasks_count = 0
-        self.btn_run.configure(text="启动引擎")
+        self.running = False
+        self.stop_flag = False
+        
+        # 4. [关键] 强制重置 UI 按钮状态
+        self.btn_run.configure(text="启动引擎", state="normal", fg_color=COLOR_ACCENT, text_color="#000")
+        self.btn_stop.configure(state="disabled")
+        
+        # 5. 重置监控面板
+        for ch in self.monitor_slots:
+            ch.reset()
+            
+        print("[System] All states reset.")
+
+    # === 新增功能：智能解码决策中心 ===
+    def analyze_source_attributes(self, filepath):
+        """
+        使用 ffprobe 深入分析视频的编码和像素格式
+        返回: (codec_name, pix_fmt)
+        """
+        try:
+            # -select_streams v:0 只分析第一条视频流
+            cmd = [
+                "ffprobe", "-v", "error", 
+                "-select_streams", "v:0", 
+                "-show_entries", "stream=codec_name,pix_fmt", 
+                "-of", "csv=p=0", 
+                filepath
+            ]
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            # 输出示例: hevc,yuv420p10le
+            output = subprocess.check_output(cmd, startupinfo=si, encoding="utf-8").strip()
+            if not output: return "unknown", "unknown"
+            
+            parts = output.split(',')
+            if len(parts) >= 2:
+                return parts[0].strip(), parts[1].strip()
+            return parts[0].strip(), "unknown"
+        except Exception as e:
+            print(f"Probe Error: {e}")
+            return "error", "error"
+
+    def get_smart_decode_args(self, filepath):
+        """
+        根据 Nvidia 硬件解码白名单决定策略
+        """
+        codec, pix_fmt = self.analyze_source_attributes(filepath)
+        filename = os.path.basename(filepath)
+        
+        # 默认 CPU 解码（安全兜底）
+        decode_args = []
+        strategy = "CPU (Soft)"
+
+        # === 判定逻辑 ===
+        # 1. HEVC (H.265): XAVC HS
+        # Nvidia (30/40系) 完美支持 HEVC 4:2:0 和 4:4:4 和 4:2:2 (10bit/12bit)
+        if "hevc" in codec:
+            decode_args = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+            strategy = "GPU (CUDA/HEVC)"
+
+        # 2. H.264 (AVC): XAVC S / XAVC S-I
+        elif "h264" in codec:
+            # 致命陷阱：Nvidia 全系不支持 H.264 的 4:2:2 (10bit/8bit 都不行)
+            if "422" in pix_fmt:
+                decode_args = [] # 强制回落 CPU
+                strategy = f"CPU (H.264 4:2:2 UNSUPPORTED by GPU)"
+            else:
+                # 4:2:0 的 H.264 放心用 GPU
+                decode_args = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+                strategy = "GPU (CUDA/AVC)"
+        
+        # 3. 其他格式 (ProRes, DNxHR 等)
+        # 通常 GPU 不支持硬解这些专业中间格式，保持 CPU 解码
+        else:
+            strategy = f"CPU ({codec})"
+
+        print(f"[Smart Engine] File: {filename} | Codec: {codec} | Pix: {pix_fmt} -> Strategy: {strategy}")
+        return decode_args, strategy
 
     def get_dur(self, f):
         try:
