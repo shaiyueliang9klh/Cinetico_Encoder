@@ -1,3 +1,67 @@
+import sys
+import subprocess
+import os
+import importlib.util
+
+# --- [自动环境配置模块] ---
+def check_and_install_dependencies():
+    # 这里列出脚本需要的所有第三方库
+    # 格式: ("导入时的名字", "pip安装时的名字")
+    required_packages = [
+        ("customtkinter", "customtkinter"),
+        ("tkinterdnd2", "tkinterdnd2"),
+        ("PIL", "pillow"),   # customtkinter 依赖 pillow
+        ("packaging", "packaging")
+    ]
+    
+    # 标记是否有新安装的库
+    installed_any = False
+    
+    print("--------------------------------------------------")
+    print("正在检查运行环境...")
+
+    for import_name, package_name in required_packages:
+        # 检查库是否已存在
+        if importlib.util.find_spec(import_name) is None:
+            print(f"⚠️ 发现缺失组件: {package_name}，正在自动安装...")
+            try:
+                # 调用 pip 安装，并使用清华源加速 (针对国内网络优化)
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", package_name, 
+                    "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"
+                ])
+                print(f"✅ {package_name} 安装成功！")
+                installed_any = True
+            except subprocess.CalledProcessError:
+                print(f"❌ {package_name} 安装失败！请手动运行: pip install {package_name}")
+                input("按回车键退出...")
+                sys.exit(1)
+        else:
+            print(f"✔ {package_name} 已安装")
+
+    # 检查 FFmpeg 是否存在 (这是外部软件，Python 没法直接装，但得提示)
+    ffmpeg_check = shutil.which("ffmpeg") if 'shutil' in sys.modules else None
+    if not ffmpeg_check:
+        # 临时导入 shutil 检查一下，因为后面主程序会导入，这里先防一手
+        import shutil
+        if not shutil.which("ffmpeg"):
+            print("\n❌ 严重错误: 未检测到 FFmpeg！")
+            print("请下载 FFmpeg 并将其 bin 文件夹添加到系统环境变量 Path 中。")
+            print("本脚本必须依赖 FFmpeg 才能工作。")
+            input("按回车键退出...")
+            # 注意：这里不强制退出，因为可能在某些特殊环境下能运行，
+            # 但主程序里的 sys_check 会再次拦截。
+    
+    if installed_any:
+        print("\n🎉 所有依赖库安装完成！正在启动程序...")
+        print("--------------------------------------------------\n")
+    else:
+        print("✔ 环境完整，准备启动...")
+        print("--------------------------------------------------\n")
+
+# 执行检查
+check_and_install_dependencies()
+
 import customtkinter as ctk  # 这是一个很好看的UI库，用来画界面的
 import tkinter as tk         # 这是Python自带的基础界面库
 from tkinter import filedialog, messagebox # 用来弹出“选择文件”和“提示框”的工具
