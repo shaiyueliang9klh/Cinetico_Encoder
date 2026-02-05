@@ -3,7 +3,6 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import subprocess
 import threading
-import re
 import os
 import time
 import shutil
@@ -12,13 +11,13 @@ from concurrent.futures import ThreadPoolExecutor
 import http.server
 import socketserver
 from http import HTTPStatus
-import math
+from functools import partial  # [v68 Fix]: 引入 partial 解决闭包问题
 
 # === 全局视觉配置 ===
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
 
-# [优化]: 动态计算内存限制
+# [v67]: 动态计算内存限制
 def get_total_ram_gb():
     try:
         class MEMORYSTATUSEX(ctypes.Structure):
@@ -34,12 +33,23 @@ def get_total_ram_gb():
     except:
         return 16.0
 
+# [v68]: 新增显存检测
+def get_free_vram_gb():
+    try:
+        cmd = ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"]
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        output = subprocess.check_output(cmd, startupinfo=si, encoding="utf-8").strip()
+        # nvidia-smi returns MiB
+        return float(output) / 1024.0
+    except:
+        return 999.0 # 无法检测时假设无限，避免误判
+
 TOTAL_RAM = get_total_ram_gb()
-# 保留 12GB 给系统和其他应用，剩下的都可以作为缓存
 MAX_RAM_LOAD_GB = max(4.0, TOTAL_RAM - 12.0) 
 SAFE_RAM_RESERVE = 6.0  
 
-print(f"[System] Total RAM: {TOTAL_RAM:.1f}GB | Cache Cap: {MAX_RAM_LOAD_GB:.1f}GB")
+print(f"[System] RAM: {TOTAL_RAM:.1f}GB | Cache Limit: {MAX_RAM_LOAD_GB:.1f}GB")
 
 COLOR_BG_MAIN = "#121212"
 COLOR_PANEL_LEFT = "#1a1a1a"
@@ -48,8 +58,6 @@ COLOR_CARD = "#2d2d2d"
 COLOR_ACCENT = "#3B8ED0"
 COLOR_ACCENT_HOVER = "#36719f"
 COLOR_CHART_LINE = "#00E676"
-COLOR_TEXT_WHITE = "#FFFFFF"
-COLOR_TEXT_GRAY = "#888888"
 COLOR_READY_RAM = "#00B894" 
 COLOR_SUCCESS = "#2ECC71" 
 COLOR_MOVING = "#F1C40F"  
@@ -60,7 +68,6 @@ COLOR_DIRECT  = "#1ABC9C"
 COLOR_PAUSED = "#7f8c8d"  
 COLOR_ERROR = "#FF4757"   
 
-# 状态码
 STATUS_WAIT = 0
 STATUS_CACHING = 1   
 STATUS_READY = 2     
@@ -432,14 +439,19 @@ class UltraEncoderApp(DnDWindow):
                 self.scroll._parent_canvas.yview_moveto(max(0, min(1, target)))
         except: pass
     
-    # [优化]: 安全的 UI 更新方法，防止在组件销毁后更新报错
-    def safe_update(self, func, *args):
-        if self.running and self.winfo_exists():
-            self.after(5, lambda: func(*args) if self.winfo_exists() else None)
+    # [v68 Fix]: 修复闭包陷阱和状态检查，确保清理逻辑能更新 UI
+    def safe_update(self, func, *args, **kwargs):
+        if self.winfo_exists():
+            self.after(5, partial(self._guarded_call, func, *args, **kwargs))
+
+    def _guarded_call(self, func, *args, **kwargs):
+        try:
+            if self.winfo_exists(): func(*args, **kwargs)
+        except: pass
 
     def __init__(self):
         super().__init__()
-        self.title("Ultra Encoder v67 (AV1/RAM Unlocked)")
+        self.title("Ultra Encoder v68 (Stable & Protected)")
         self.geometry("1300x900")
         self.configure(fg_color=COLOR_BG_MAIN)
         self.minsize(1200, 850) 
@@ -611,7 +623,7 @@ class UltraEncoderApp(DnDWindow):
                     if temp > 75: color = COLOR_ERROR      
                     elif temp > 60: color = COLOR_SSD_CACHE 
                     elif power > 50: color = COLOR_SUCCESS  
-                    self.safe_update(self.lbl_gpu.configure, f"GPU: {power:.1f}W | {temp}°C", color)
+                    self.safe_update(self.lbl_gpu.configure, text=f"GPU: {power:.1f}W | {temp}°C", text_color=color)
             except: pass
             time.sleep(1) 
 
@@ -620,7 +632,7 @@ class UltraEncoderApp(DnDWindow):
         cache_dir = os.path.join(path, "_Ultra_Smart_Cache_")
         os.makedirs(cache_dir, exist_ok=True)
         self.temp_dir = cache_dir
-        self.safe_update(self.btn_cache.configure, f"缓存池: {path} (点击修改)")
+        self.safe_update(self.btn_cache.configure, text=f"缓存池: {path} (点击修改)")
 
     def select_cache_folder(self):
         d = filedialog.askdirectory(title="选择缓存盘 (SSD 优先)")
@@ -694,7 +706,6 @@ class UltraEncoderApp(DnDWindow):
         row1.pack(fill="x", pady=(5, 5), padx=10)
         ctk.CTkLabel(row1, text="编码格式", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
         self.codec_var = ctk.StringVar(value="H.264")
-        # [优化]: 添加 AV1 选项
         self.seg_codec = ctk.CTkSegmentedButton(row1, values=["H.264", "H.265", "AV1"], variable=self.codec_var, selected_color=COLOR_ACCENT, corner_radius=10)
         self.seg_codec.pack(fill="x", pady=(5, 0))
 
@@ -758,7 +769,6 @@ class UltraEncoderApp(DnDWindow):
         free_ram = get_free_ram_gb()
         available_for_cache = free_ram - SAFE_RAM_RESERVE
 
-        # [优化]: 只要内存够，尽量走 RAM，提升读取速度
         if available_for_cache > file_size_gb and file_size_gb < MAX_RAM_LOAD_GB:
             self.safe_update(widget.set_status, "📥 载入内存中...", COLOR_RAM, STATUS_CACHING)
             self.safe_update(widget.set_progress, 0, COLOR_RAM)
@@ -879,10 +889,18 @@ class UltraEncoderApp(DnDWindow):
         try:
             if self.stop_flag: return
             
+            # [v68 Fix]: 槽位死锁超时保护
+            wait_start = time.time()
             while my_slot_idx is None and not self.stop_flag:
                 with self.slot_lock:
                     if self.available_indices: my_slot_idx = self.available_indices.pop(0)
-                if my_slot_idx is None: time.sleep(0.1)
+                if my_slot_idx is None: 
+                    if time.time() - wait_start > 30: # 30s timeout
+                         print("[System] Slot Deadlock detected, forced reset.")
+                         with self.slot_lock:
+                             self.available_indices = list(range(self.current_workers))
+                         continue
+                    time.sleep(0.1)
             if self.stop_flag: return
 
             card = self.task_widgets[input_file]
@@ -914,7 +932,6 @@ class UltraEncoderApp(DnDWindow):
             name, ext = os.path.splitext(fname)
             codec_sel = self.codec_var.get()
             
-            # [优化]: 生成后缀名
             suffix = "_H264"
             if "H.265" in codec_sel: suffix = "_H265"
             elif "AV1" in codec_sel: suffix = "_AV1"
@@ -934,12 +951,19 @@ class UltraEncoderApp(DnDWindow):
                 output_log.clear()
                 
                 using_gpu = self.gpu_var.get()
+
+                # [v68]: 显存看门狗
+                if using_gpu:
+                    free_vram = get_free_vram_gb()
+                    if free_vram < 2.5: # 预留 2.5GB 安全阈值
+                        using_gpu = False
+                        self.safe_update(card.set_status, "⚠️ 显存不足，转CPU", COLOR_MOVING, STATUS_RUN)
                 
                 if using_gpu:
                     decode_flags, strategy_log = self.get_smart_decode_args(input_file)
                 else:
                     decode_flags = []
-                    strategy_log = "CPU (Manual Forced)"
+                    strategy_log = "CPU (Manual/OOM Fallback)"
 
                 self.safe_update(card.set_status, f"▶️ {strategy_log}", COLOR_ACCENT, STATUS_RUN)
 
@@ -948,20 +972,20 @@ class UltraEncoderApp(DnDWindow):
                     try:
                         if not ram_server:
                             ram_server, port, _ = start_ram_server(card.ram_data)
-                        input_arg_final = f"http://127.0.0.1:{port}/video{ext}"
+                        # [v68]: 使用 .mp4 后缀帮助 FFmpeg 识别
+                        input_arg_final = f"http://127.0.0.1:{port}/stream.mp4"
                     except:
                         input_arg_final = input_file
                 elif card.source_mode == "SSD_CACHE": 
                     input_arg_final = card.ssd_cache_path
 
-                # [优化]: 编码器选择逻辑
                 if using_gpu:
                     if "H.265" in codec_sel: v_codec = "hevc_nvenc"
                     elif "AV1" in codec_sel: v_codec = "av1_nvenc"
                     else: v_codec = "h264_nvenc"
                 else:
                     if "H.265" in codec_sel: v_codec = "libx265"
-                    elif "AV1" in codec_sel: v_codec = "libaom-av1" # CPU AV1 极慢，不推荐
+                    elif "AV1" in codec_sel: v_codec = "libaom-av1"
                     else: v_codec = "libx264"
 
                 cmd = ["ffmpeg", "-y"]
@@ -977,10 +1001,10 @@ class UltraEncoderApp(DnDWindow):
                     else:
                         cmd.extend(["-pix_fmt", "yuv420p"])
                     
-                    # [优化]: AV1 的参数微调
+                    # [v68]: AV1 参数修正 (-qp + P6)
                     if "AV1" in codec_sel:
-                         cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), 
-                                "-preset", "p7", "-b:v", "0"]) # P7 is best quality for Ada Lovelace (40 series)
+                         cmd.extend(["-rc", "vbr", "-qp", str(self.crf_var.get()), 
+                                "-preset", "p6", "-b:v", "0"]) 
                     else:
                         cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), 
                                     "-preset", "p6", "-b:v", "0"])
@@ -1028,7 +1052,6 @@ class UltraEncoderApp(DnDWindow):
                             elif key == "out_time_us":
                                 try:
                                     now = time.time()
-                                    # [优化]: 增加 UI 刷新间隔到 0.25s，减轻高并发时的 UI 压力
                                     if now - last_ui_update_time > 0.25: 
                                         us = int(value)
                                         current_sec = us / 1000000.0
@@ -1208,7 +1231,6 @@ class UltraEncoderApp(DnDWindow):
         decode_args = []
         strategy = "CPU (Soft)"
 
-        # [优化]: 增加对 AV1 解码的识别 (4080 支持)
         if "hevc" in codec or "av1" in codec:
             decode_args = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
             strategy = f"GPU (CUDA/{codec.upper()})"
