@@ -11,11 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 import http.server
 import socketserver
 from http import HTTPStatus
-from functools import partial  # [v68 Fix]: 引入 partial 解决闭包问题
+from functools import partial
 
 # === 全局视觉配置 ===
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
+
+# [v72 修复]: 补回 v71 丢失的颜色定义，解决停止时报错的问题
+COLOR_TEXT_GRAY = "#888888" 
 
 # [v67]: 动态计算内存限制
 def get_total_ram_gb():
@@ -33,19 +36,16 @@ def get_total_ram_gb():
     except:
         return 16.0
 
-# [v68]: 新增显存检测
+# [v68]: 新增显存检测 (辅助函数)
 def get_free_vram_gb():
     try:
         cmd = ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"]
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         output = subprocess.check_output(cmd, startupinfo=si, encoding="utf-8").strip()
-        # nvidia-smi returns MiB
         return float(output) / 1024.0
     except:
-        return 999.0 # 无法检测时假设无限，避免误判
-
-
+        return 999.0
 
 TOTAL_RAM = get_total_ram_gb()
 MAX_RAM_LOAD_GB = max(4.0, TOTAL_RAM - 12.0) 
@@ -169,14 +169,6 @@ def start_ram_server(ram_data):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, port, thread
-
-def get_free_ram_gb():
-    try:
-        stat = MEMORYSTATUSEX()
-        stat.dwLength = ctypes.sizeof(stat)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-        return stat.ullAvailPhys / (1024**3)
-    except: return 8.0 
 
 def check_ffmpeg():
     try:
@@ -441,7 +433,7 @@ class UltraEncoderApp(DnDWindow):
                 self.scroll._parent_canvas.yview_moveto(max(0, min(1, target)))
         except: pass
     
-    # [v68 Fix]: 修复闭包陷阱和状态检查，确保清理逻辑能更新 UI
+    # [v68 Fix]: 修复闭包陷阱
     def safe_update(self, func, *args, **kwargs):
         if self.winfo_exists():
             self.after(5, partial(self._guarded_call, func, *args, **kwargs))
@@ -453,7 +445,7 @@ class UltraEncoderApp(DnDWindow):
 
     def __init__(self):
         super().__init__()
-        self.title("Ultra Encoder v70 (Concurrency Safe)") # 更新标题
+        self.title("Ultra Encoder v72 (Bugfix Edition)")
         self.geometry("1300x900")
         self.configure(fg_color=COLOR_BG_MAIN)
         self.minsize(1200, 850) 
@@ -469,13 +461,10 @@ class UltraEncoderApp(DnDWindow):
         self.slot_lock = threading.Lock()
         self.read_lock = threading.Lock()
         
-        # === [v70 补丁开始] ===
-        # 新增 GPU 并发逻辑锁
+        # [v70]: 新增 GPU 并发逻辑锁
         self.gpu_lock = threading.Lock()
         self.gpu_active_count = 0
-        # 获取一次总显存即可（调用后面定义的方法）
-        self.total_vram_gb = self.get_total_vram_gb() 
-        # === [v70 补丁结束] ===
+        self.total_vram_gb = self.get_total_vram_gb()
         
         self.monitor_slots = []
         self.available_indices = [] 
@@ -618,15 +607,15 @@ class UltraEncoderApp(DnDWindow):
         threading.Thread(target=self.gpu_monitor_loop, daemon=True).start()
         self.update_monitor_layout()
 
-    # [v70]: 获取总显存大小
+    # [v70]: 获取总显存大小 (辅助方法)
     def get_total_vram_gb(self):
         try:
             cmd = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
             si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             return float(subprocess.check_output(cmd, startupinfo=si, encoding="utf-8").strip()) / 1024.0
-        except: return 16.0 # 默认 16GB (4080)
+        except: return 16.0 
 
-# [v70]: 基于逻辑计数的显存预判 (解决并发抢占问题)
+    # [v70]: 基于逻辑计数的显存预判 (解决并发抢占问题)
     def should_use_gpu(self, codec_sel):
         if not self.gpu_var.get(): return False
         
@@ -870,31 +859,6 @@ class UltraEncoderApp(DnDWindow):
         except:
             self.safe_update(widget.set_status, "缓存失败", COLOR_ERROR, STATUS_ERR)
             return False
-
-    def smart_preload_worker(self):
-        while True:
-            free = get_free_ram_gb()
-            self.safe_update(self.btn_ram.configure, text=f"空闲内存: {free:.1f} GB")
-            
-            if self.running and not self.stop_flag:
-                if not self.read_lock.acquire(blocking=False):
-                    time.sleep(0.5); continue
-                
-                target_file, target_widget = None, None
-                with self.queue_lock: 
-                    for f in self.file_queue:
-                        w = self.task_widgets.get(f)
-                        if w and w.status_code == STATUS_WAIT and w.source_mode == "PENDING":
-                            target_file, target_widget = f, w
-                            break 
-                
-                if target_file and target_widget:
-                    self.process_caching(target_file, target_widget)
-                
-                self.read_lock.release()
-                time.sleep(0.5) 
-            else:
-                time.sleep(1)
 
     def engine(self):
         while not self.stop_flag:
@@ -1205,130 +1169,3 @@ class UltraEncoderApp(DnDWindow):
                 with self.slot_lock: 
                     self.available_indices.append(my_slot_idx)
                     self.available_indices.sort()
-
-    def run(self):
-        if not self.file_queue: 
-            messagebox.showinfo("提示", "请先拖入或添加视频文件！")
-            return
-        
-        self.btn_run.configure(state="disabled") 
-        self.animate_text_change(self.btn_run, f"压制中 (1/{len(self.file_queue)})") 
-        self.btn_stop.configure(state="normal")
-        
-        self.stop_flag = False
-        self.update_monitor_layout(force_reset=True)
-        self.running = True
-        
-        threading.Thread(target=self.engine, daemon=True).start()
-
-    def stop(self):
-        self.stop_flag = True
-        self.kill_all_procs()
-        self.active_procs = []
-        with self.queue_lock:
-            for f, card in self.task_widgets.items():
-                card.clean_memory()
-                if card.status_code in [STATUS_RUN, STATUS_CACHING, STATUS_READY]:
-                    card.set_status("已停止", COLOR_TEXT_GRAY, STATUS_WAIT)
-                    card.set_progress(0)
-        self.submitted_tasks.clear()
-        self.running = False
-        self.reset_ui_state()
-
-    def reset_ui_state(self):
-        self.btn_run.configure(state="normal", text="启动引擎")
-        self.btn_stop.configure(state="disabled")
-
-    def add_file(self):
-        f_list = filedialog.askopenfilenames()
-        self.add_list(f_list)
-
-    def clear_all(self):
-        if self.running:
-            if not messagebox.askyesno("警告", "队列正在运行，确定要停止并清空吗？"):
-                return
-            self.stop()
-        self.after(100, self._do_clear)
-
-    def _do_clear(self):
-        for w in list(self.task_widgets.values()): 
-            w.clean_memory()
-            w.destroy()
-        self.task_widgets.clear()
-        self.file_queue.clear()
-        self.submitted_tasks.clear()
-        self.temp_files.clear() 
-        self.total_tasks_run = 0
-        self.finished_tasks_count = 0
-        self.running = False
-        self.stop_flag = False
-        self.btn_run.configure(text="启动引擎", state="normal", fg_color=COLOR_ACCENT, text_color="#000")
-        self.btn_stop.configure(state="disabled")
-        for ch in self.monitor_slots:
-            ch.reset()
-        print("[System] All states reset.")
-
-    def analyze_source_attributes(self, filepath):
-        try:
-            cmd = [
-                "ffprobe", "-v", "error", 
-                "-select_streams", "v:0", 
-                "-show_entries", "stream=codec_name,pix_fmt", 
-                "-of", "csv=p=0", 
-                filepath
-            ]
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            output = subprocess.check_output(cmd, startupinfo=si, encoding="utf-8").strip()
-            if not output: return "unknown", "unknown"
-            
-            parts = output.split(',')
-            if len(parts) >= 2:
-                return parts[0].strip(), parts[1].strip()
-            return parts[0].strip(), "unknown"
-        except Exception as e:
-            print(f"Probe Error: {e}")
-            return "error", "error"
-
-    def get_smart_decode_args(self, filepath):
-        codec, pix_fmt = self.analyze_source_attributes(filepath)
-        filename = os.path.basename(filepath)
-        
-        decode_args = []
-        strategy = "CPU (Soft)"
-
-        if "hevc" in codec or "av1" in codec:
-            decode_args = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-            strategy = f"GPU (CUDA/{codec.upper()})"
-
-        elif "h264" in codec:
-            if "422" in pix_fmt:
-                decode_args = [] 
-                strategy = f"CPU (H.264 4:2:2 UNSUPPORTED by GPU)"
-            else:
-                decode_args = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-                strategy = "GPU (CUDA/AVC)"
-        
-        else:
-            strategy = f"CPU ({codec})"
-
-        print(f"[Smart Engine] File: {filename} | Codec: {codec} | Pix: {pix_fmt} -> Strategy: {strategy}")
-        return decode_args, strategy
-
-    def get_dur(self, f):
-        try:
-            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", f]
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            return float(subprocess.check_output(cmd, startupinfo=si).strip())
-        except: return 0
-
-    def clean_junk(self):
-        for f in list(self.temp_files):
-            try: os.remove(f)
-            except: pass
-        self.temp_files.clear()
-
-if __name__ == "__main__":
-    app = UltraEncoderApp()
-    app.mainloop()
