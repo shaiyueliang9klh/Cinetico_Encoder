@@ -1116,25 +1116,28 @@ class UltraEncoderApp(DnDWindow):
             self.monitor_slots.append(ch)
 
     # --- 缓存处理核心逻辑 ---
-# --- [核心修复] 智能缓存函数：支持锁分离 ---
-    def process_caching(self, src_path, widget, lock_obj=None):
+    # --- [核心修复] 智能缓存函数：支持锁分离 ---
+# [修改] 增加 no_wait 参数，让预加载任务由于内存不足时果断切到SSD缓存
+    def process_caching(self, src_path, widget, lock_obj=None, no_wait=False):
         file_size = os.path.getsize(src_path)
         file_size_gb = file_size / (1024**3)
         
         is_ssd = is_drive_ssd(src_path)
         is_external = is_bus_usb(src_path)
         
-        # 1. 如果是SSD且不是移动硬盘，直接读取，不需要缓存
+        # 1. 如果是SSD且不是移动硬盘，直接读取
         if is_ssd and not is_external:
             self.safe_update(widget.set_status, "就绪 (SSD直读)", COLOR_DIRECT, STATUS_READY)
             widget.source_mode = "DIRECT"
             return True
 
-        # 2. 内存缓存判断：如果文件小于内存上限
+        # 2. 内存缓存判断
         if file_size_gb < MAX_RAM_LOAD_GB:
              wait_count = 0
-             # [重要修复] 等待内存时，千万不要持有 read_lock，否则会卡死主线程
-             while wait_count < 60: 
+             # [关键修改] 如果开启了 no_wait (预加载模式)，就不等那30秒了，直接跳过去判断SSD
+             limit = 0 if no_wait else 60 
+             
+             while wait_count < limit: 
                  free_ram = get_free_ram_gb()
                  available = free_ram - SAFE_RAM_RESERVE
                  if available > file_size_gb:
@@ -1147,16 +1150,15 @@ class UltraEncoderApp(DnDWindow):
                  time.sleep(0.5)
                  wait_count += 1
 
-        # 3. 开始执行 IO 操作（此时才需要加锁）
-        # 如果传入了锁对象，在这里获取；否则假设外部已经获取了锁
+        # 3. 开始执行 IO 操作
         if lock_obj: lock_obj.acquire()
         try:
-            # 再次检查内存（防止等待期间被别人抢了）
+            # 再次检查内存
             free_ram = get_free_ram_gb()
             available_for_cache = free_ram - SAFE_RAM_RESERVE
 
             if available_for_cache > file_size_gb and file_size_gb < MAX_RAM_LOAD_GB:
-                # === 进入内存加载流程 ===
+                # ... (此处代码不变: 载入内存逻辑) ...
                 self.safe_update(widget.set_status, "📥 载入内存中...", COLOR_RAM, STATUS_CACHING)
                 self.safe_update(widget.set_progress, 0, COLOR_RAM)
                 try:
@@ -1183,10 +1185,12 @@ class UltraEncoderApp(DnDWindow):
                 except Exception: 
                     widget.clean_memory() 
 
-            # 4. 如果内存不够，就复制到SSD缓存盘
+            # 4. 内存不够，复制到 SSD 缓存
+            # 只要上面的内存判断没过，就会自动流转到这里
             self.safe_update(widget.set_status, "📥 写入缓存...", COLOR_SSD_CACHE, STATUS_CACHING)
             self.safe_update(widget.set_progress, 0, COLOR_SSD_CACHE)
             try:
+                # ... (此处代码不变: 写入SSD缓存逻辑) ...
                 fname = os.path.basename(src_path)
                 cache_path = os.path.join(self.temp_dir, f"CACHE_{int(time.time())}_{fname}")
                 copied = 0
@@ -1213,9 +1217,9 @@ class UltraEncoderApp(DnDWindow):
         
         finally:
             if lock_obj: lock_obj.release()
-            
+    
     # 点击“启动”按钮触发
-# [核心修复] 启动函数：包含完整状态重置
+    # [核心修复] 启动函数：包含完整状态重置
     def run(self):
         if not self.file_queue: return
         # 防止重复点击
@@ -1343,23 +1347,20 @@ class UltraEncoderApp(DnDWindow):
         self.running = False
         self.safe_update(self.reset_ui_state)
 
-# [核心修复] 智能预加载检查
+    # [核心修复] 智能预加载检查
+# [修改] 放宽预加载条件，允许回退到SSD缓存
     def check_and_preload(self):
         if self.stop_flag: return
 
         with self.queue_lock:
-            # --- 礼让原则 (优化版) ---
-            # 只有当正在跑的任务是“机械硬盘读取中”时，才暂停预加载。
-            # 如果正在跑的任务是 SSD 直读，或者是 内存读取，则允许预加载偷跑。
+            # 1. 礼让原则 (保持不变)
             for running_f in self.submitted_tasks:
                 running_card = self.task_widgets.get(running_f)
                 if running_card and running_card.status_code <= STATUS_CACHING:
-                    # 如果该文件在 SSD 上，允许并发读取，不退出
                     if is_drive_ssd(running_f): continue
-                    # 否则（机械硬盘），必须礼让，防止磁头乱跳
                     return 
             
-            # 寻找下一个受害者
+            # 2. 寻找下一个受害者
             for f in self.file_queue:
                 if f in self.submitted_tasks: continue
                 if f in self.preloading_tasks: continue
@@ -1371,8 +1372,14 @@ class UltraEncoderApp(DnDWindow):
                 try:
                     f_size = os.path.getsize(f) / (1024**3)
                     free_ram = get_free_ram_gb()
-                    # 只要内存够，或者源文件在SSD上，就允许预加载
-                    if free_ram - 2.0 > f_size or is_drive_ssd(f): 
+                    
+                    # [关键修改] 检查是否值得预加载
+                    # 条件A: 内存够用
+                    # 条件B: 源文件本来就在SSD (预加载只是为了热身，很快)
+                    # 条件C: 缓存目录在SSD (内存不够但我可以写到高速缓存里)
+                    cache_is_ssd = is_drive_ssd(self.temp_dir)
+                    
+                    if (free_ram - 2.0 > f_size) or is_drive_ssd(f) or cache_is_ssd: 
                         self.preloading_tasks.add(f)
                         self.preload_executor.submit(self.run_preload_task, f)
                         return 
@@ -1380,15 +1387,14 @@ class UltraEncoderApp(DnDWindow):
 
     # 这是搬运工具体干的活
     # [核心修复] 预加载任务执行器
+    # [修改] 启用不等待模式
     def run_preload_task(self, input_file):
         try:
             if self.stop_flag: return
             card = self.task_widgets[input_file]
             
-            # 这里的改动关键：不直接 acquire lock，而是把 lock 传进去
-            # 让 process_caching 在“等待内存”时不要锁硬盘，
-            # 只有在“真正读数据”时才锁硬盘。
-            self.process_caching(input_file, card, lock_obj=self.read_lock)
+            # 传入 no_wait=True，告诉它：如果内存满了别傻等，直接写 SSD 缓存
+            self.process_caching(input_file, card, lock_obj=self.read_lock, no_wait=True)
                 
         except Exception as e:
             print(f"Preload Error: {e}")
@@ -1396,7 +1402,6 @@ class UltraEncoderApp(DnDWindow):
             with self.queue_lock:
                 if input_file in self.preloading_tasks:
                     self.preloading_tasks.remove(input_file)
-
     # --- 任务执行函数 (Process) ---
     # 这是一个工人，负责具体压制一个视频
     def process(self, input_file):
