@@ -477,6 +477,110 @@ class TaskCard(ctk.CTkFrame):
         self.ssd_cache_path = None
 
 # =========================================================================
+# === 全新设计的高级帮助窗口 ===
+# =========================================================================
+class HelpWindow(ctk.CTkToplevel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.geometry("750x650")
+        self.title("Ultra Encoder - 核心原理与操作指南")
+        self.attributes("-topmost", True) # 让窗口始终置顶
+        
+        # 标题栏
+        header = ctk.CTkFrame(self, height=60, fg_color="transparent")
+        header.pack(fill="x", padx=20, pady=10)
+        ctk.CTkLabel(header, text="📘 用户指南 & 核心原理", font=("微软雅黑", 22, "bold"), text_color="#FFF").pack(side="left")
+        ctk.CTkLabel(header, text="v75.0", font=("Consolas", 12), text_color="#666").pack(side="right", pady=10)
+
+        # 滚动内容区
+        self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.scroll.pack(fill="both", expand=True, padx=10, pady=(0, 20))
+
+        # --- 1. 核心参数篇 ---
+        self.add_section("🎨 画质与体积 (CRF/QP 参数)", "这是控制视频清晰度的核心。数值越小 = 画质越高 = 体积越大。", "#3B8ED0")
+        
+        self.add_card("CRF 数值指南", [
+            ("16 - 20", "💎 收藏级画质", "几乎无损，肉眼难以分辨差异，但体积巨大。适合作为素材保存。"),
+            ("21 - 24", "⚖️ 平衡推荐", "目前主流的压制参数 (默认23)。在手机/电脑上观看非常清晰，体积适中。"),
+            ("25 - 30", "💾 存储优先", "画质有轻微损失（主要是暗部细节），但体积能缩小 30%-50%。"),
+            ("31 +", "📉 极限压缩", "画质有明显涂抹感，仅适合并在网盘归档或在小屏幕观看。")
+        ])
+
+        # --- 2. 编码格式篇 ---
+        self.add_section("🎞️ 编码格式对比", "选择正确的格式决定了播放兼容性和压缩效率。", "#00E676")
+        
+        grid_frame = ctk.CTkFrame(self.scroll, fg_color="#252525", corner_radius=10)
+        grid_frame.pack(fill="x", padx=10, pady=5)
+        self.add_grid_row(grid_frame, "格式", "兼容性", "压缩率", "速度", "推荐场景", is_header=True)
+        self.add_grid_row(grid_frame, "H.264", "⭐⭐⭐⭐⭐", "⭐⭐", "🚀 快", "发微信、投屏、老设备播放")
+        self.add_grid_row(grid_frame, "H.265", "⭐⭐⭐", "⭐⭐⭐⭐", "⚡ 中", "收藏电影、节省硬盘空间")
+        self.add_grid_row(grid_frame, "AV1", "⭐⭐", "⭐⭐⭐⭐⭐", "🐢 慢", "未来标准，极限体积 (需新显卡)")
+
+        # --- 3. 加速原理篇 ---
+        self.add_section("🚀 加速引擎原理 (IO 优化)", "为什么本程序比普通 FFmpeg 快？", "#E67E22")
+        
+        explain_text = """
+        普通软件压制时，FFmpeg 是一边读硬盘、一边算、一边写硬盘。
+        如果你的硬盘（特别是机械硬盘）读取慢，GPU/CPU 就要停下来等数据，造成卡顿。
+
+        ✅ 本程序的优化逻辑：
+        1. 内存加速 (RAM): 如果文件小于 4GB (系统空闲内存允许)，直接把整个视频“吞”进内存里。
+           FFmpeg 从内存读取数据的速度是硬盘的几十倍，彻底喂饱 GPU。
+        2. 缓存加速 (SSD): 如果内存不够，程序会自动把视频复制到你的 SSD 缓存盘。
+           避免机械硬盘磁头来回跳动（随机读取性能差）导致的降速。
+        """
+        ctk.CTkLabel(self.scroll, text=explain_text, font=("微软雅黑", 12), text_color="#CCC", justify="left", anchor="w").pack(fill="x", padx=20, pady=5)
+
+        # --- 4. 显卡与 CPU ---
+        self.add_section("⚙️ CPU vs GPU", "什么时候该用什么？", "#9B59B6")
+        self.add_card("选择建议", [
+            ("GPU (NVENC)", "推荐", "速度极快，不占 CPU，电脑不卡。适合批量处理。"),
+            ("CPU (x264/5)", "备用", "画质在同码率下略好于 GPU (微乎其微)，但速度慢，且会让电脑变卡。"),
+            ("⚠️ 注意", "显存限制", "如果你开启 3-4 个并发任务，显存可能爆满。此时建议减少并发数。")
+        ])
+
+        # 底部留白
+        ctk.CTkLabel(self.scroll, text="").pack(pady=10)
+
+    def add_section(self, title, subtitle, color):
+        frame = ctk.CTkFrame(self.scroll, fg_color="transparent")
+        frame.pack(fill="x", padx=10, pady=(20, 5))
+        ctk.CTkLabel(frame, text=title, font=("微软雅黑", 16, "bold"), text_color=color).pack(anchor="w")
+        ctk.CTkLabel(frame, text=subtitle, font=("微软雅黑", 12), text_color="#888").pack(anchor="w")
+
+    def add_card(self, title, items):
+        card = ctk.CTkFrame(self.scroll, fg_color="#2b2b2b", corner_radius=8)
+        card.pack(fill="x", padx=10, pady=5)
+        for idx, (head, tag, desc) in enumerate(items):
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=10, pady=8)
+            
+            top = ctk.CTkFrame(row, fg_color="transparent")
+            top.pack(fill="x")
+            ctk.CTkLabel(top, text=head, font=("Arial", 13, "bold"), text_color="#DDD", width=80, anchor="w").pack(side="left")
+            ctk.CTkLabel(top, text=tag, font=("微软雅黑", 11, "bold"), text_color="#3B8ED0" if "推荐" in tag else "#aaa").pack(side="left", padx=10)
+            
+            ctk.CTkLabel(row, text=desc, font=("微软雅黑", 12), text_color="#999", wraplength=600, justify="left").pack(fill="x", padx=(0,0), pady=(2,0))
+            
+            if idx < len(items) - 1:
+                ctk.CTkFrame(card, height=1, fg_color="#3a3a3a").pack(fill="x", padx=10)
+
+    def add_grid_row(self, master, c1, c2, c3, c4, c5, is_header=False):
+        row = ctk.CTkFrame(master, fg_color="transparent", height=30)
+        row.pack(fill="x", padx=5, pady=2)
+        font = ("微软雅黑", 12, "bold") if is_header else ("微软雅黑", 12)
+        color = "#FFF" if is_header else "#CCC"
+        
+        ctk.CTkLabel(row, text=c1, width=60, font=font, text_color=color, anchor="w").pack(side="left", padx=5)
+        ctk.CTkLabel(row, text=c2, width=80, font=font, text_color=color, anchor="center").pack(side="left", padx=5)
+        ctk.CTkLabel(row, text=c3, width=80, font=font, text_color=color, anchor="center").pack(side="left", padx=5)
+        ctk.CTkLabel(row, text=c4, width=60, font=font, text_color=color, anchor="center").pack(side="left", padx=5)
+        ctk.CTkLabel(row, text=c5, width=200, font=font, text_color=color, anchor="w").pack(side="left", padx=5)
+        
+        if is_header:
+            ctk.CTkFrame(master, height=2, fg_color="#444").pack(fill="x", padx=5)
+
+# =========================================================================
 # === 主程序类 (核心逻辑都在这) ===
 # =========================================================================
 class UltraEncoderApp(DnDWindow):
@@ -577,15 +681,13 @@ class UltraEncoderApp(DnDWindow):
             self.dnd_bind('<<Drop>>', self.drop_file)
 
     # 显示帮助弹窗
+    # [修改后] 点击问号时，弹出我们设计好的漂亮窗口
     def show_help(self):
-        msg = """
-【新手操作指南】
-1. 编码格式 (推荐: H.264): 兼容性最好。H.265体积更小但老电脑可能卡。
-2. 画质 (CRF数值): 数值越小越清晰。推荐23作为平衡点。
-3. 并发任务: 高端显卡建议开2-3个，普通显卡建议1-2个。
-        """
-        messagebox.showinfo("使用帮助", msg)
-
+        # 检查是否已经打开了窗口，防止重复打开
+        if hasattr(self, "help_window") and self.help_window.winfo_exists():
+            self.help_window.lift() # 如果已经打开了，就把它置顶
+        else:
+            self.help_window = HelpWindow(self) # 创建新窗口
     # 拖拽文件进来时触发
     def drop_file(self, event):
         files = self.tk.splitlist(event.data)
