@@ -972,6 +972,19 @@ class UltraEncoderApp(DnDWindow):
             self.manual_cache_path = d
             self.scan_disk() 
 
+    # 【新增】智能按钮响应函数
+    def toggle_action(self):
+        # 如果当前没在跑，就尝试启动
+        if not self.running:
+            if not self.file_queue:
+                messagebox.showinfo("提示", "请先拖入或导入视频文件！")
+                return
+            # 队列里有任务才启动
+            self.run()
+        else:
+            # 如果正在跑，点击就是停止
+            self.stop()
+
     # --- 界面布局逻辑 (把所有按钮放上去) ---
     def setup_ui(self):
         self.grid_columnconfigure(0, weight=0, minsize=320) 
@@ -1012,11 +1025,11 @@ class UltraEncoderApp(DnDWindow):
 
         # 底部控制区 (优先级、并发、参数)
         l_btm = ctk.CTkFrame(left, fg_color="#222", corner_radius=20)
-        l_btm.pack(side="bottom", fill="x", padx=15, pady=20, ipadx=5, ipady=10)
-        
-        # 优先级选择
+        l_btm.pack(side="bottom", fill="x", padx=15, pady=20, ipadx=5, ipady=10)        
+
+        # --- 1. 优先级选择 ---
         rowP = ctk.CTkFrame(l_btm, fg_color="transparent")
-        rowP.pack(fill="x", pady=(10, 5), padx=10)
+        rowP.pack(fill="x", pady=(15, 5), padx=15)
         ctk.CTkLabel(rowP, text="系统优先级", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
         self.priority_var = ctk.StringVar(value="优先")
         self.seg_priority = ctk.CTkSegmentedButton(rowP, values=["常规", "优先", "极速"], 
@@ -1024,9 +1037,9 @@ class UltraEncoderApp(DnDWindow):
                                                   selected_color=COLOR_ACCENT, corner_radius=10)
         self.seg_priority.pack(fill="x", pady=(5, 0))
 
-        # 并发数选择
+        # --- 2. 并发数选择 ---
         row3 = ctk.CTkFrame(l_btm, fg_color="transparent")
-        row3.pack(fill="x", pady=(10, 5), padx=10)
+        row3.pack(fill="x", pady=(15, 5), padx=15)
         ctk.CTkLabel(row3, text="并发任务数量", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
         w_box = ctk.CTkFrame(row3, fg_color="transparent")
         w_box.pack(fill="x")
@@ -1037,37 +1050,30 @@ class UltraEncoderApp(DnDWindow):
         self.gpu_var = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(w_box, text="GPU", width=60, variable=self.gpu_var, progress_color=COLOR_ACCENT).pack(side="right", padx=(10,0))
         
-        # 画质滑块
+        # --- 3. 画质滑块 ---
         row2 = ctk.CTkFrame(l_btm, fg_color="transparent")
-        row2.pack(fill="x", pady=10, padx=10)
-        ctk.CTkLabel(row2, text="CRF", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
+        row2.pack(fill="x", pady=15, padx=15)
+        ctk.CTkLabel(row2, text="CRF 画质控制", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
         c_box = ctk.CTkFrame(row2, fg_color="transparent")
         c_box.pack(fill="x")
         self.crf_var = ctk.IntVar(value=23)
-        # 【这里可以改】from_=16, to=35 是滑块范围
         ctk.CTkSlider(c_box, from_=16, to=35, variable=self.crf_var, progress_color=COLOR_ACCENT).pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(c_box, textvariable=self.crf_var, width=25, font=("Arial", 12, "bold"), text_color=COLOR_ACCENT).pack(side="right")
         
-        # 编码格式选择
+        # --- 4. 编码格式选择 ---
         row1 = ctk.CTkFrame(l_btm, fg_color="transparent")
-        row1.pack(fill="x", pady=(5, 5), padx=10)
+        row1.pack(fill="x", pady=(5, 20), padx=15) # pady 下方留白大一点，和按钮隔开
         ctk.CTkLabel(row1, text="编码格式", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
         self.codec_var = ctk.StringVar(value="H.264")
         self.seg_codec = ctk.CTkSegmentedButton(row1, values=["H.264", "H.265", "AV1"], variable=self.codec_var, selected_color=COLOR_ACCENT, corner_radius=10)
         self.seg_codec.pack(fill="x", pady=(5, 0))
 
-        # 开始/停止按钮
-        btn_row = ctk.CTkFrame(left, fg_color="transparent")
-        btn_row.pack(side="bottom", fill="x", padx=20, pady=(0, 20))
-        self.btn_run = ctk.CTkButton(btn_row, text="启动/COMPRESS", height=45, corner_radius=20, 
-                                   font=("微软雅黑", 15, "bold"), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, 
-                                   text_color="#000", command=self.run)
-        self.btn_run.pack(side="left", fill="x", expand=True, padx=(0, 10)) 
-        self.btn_stop = ctk.CTkButton(btn_row, text="停止/STOP", height=45, corner_radius=20, width=100,
-                                    fg_color="transparent", border_width=2, border_color=COLOR_ERROR, 
-                                    text_color=COLOR_ERROR, hover_color="#221111", 
-                                    state="disabled", command=self.stop)
-        self.btn_stop.pack(side="right")
+        # --- 5. 【核心修改】合并后的超级按钮 ---
+        # 放在 l_btm 内部的最下方，实现了“鼠标一路向下”的顺滑体验
+        self.btn_action = ctk.CTkButton(l_btm, text="COMPRESS / 启动", height=50, corner_radius=12, 
+                                   font=("微软雅黑", 16, "bold"), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, 
+                                   text_color="#000", command=self.toggle_action) # 绑定到新的切换函数
+        self.btn_action.pack(fill="x", padx=15, pady=(0, 10))
 
         # 任务列表滚动区
         self.scroll = ctk.CTkScrollableFrame(left, fg_color="transparent")
@@ -1223,6 +1229,15 @@ class UltraEncoderApp(DnDWindow):
         self.running = True
         self.stop_flag = False
         
+        # --- 【修改】更新按钮状态为“停止模式” ---
+        self.btn_action.configure(
+            text="STOP / 停止", 
+            fg_color=COLOR_ERROR,       # 变成红色
+            hover_color="#C0392B",      # 悬停时是深红色
+            state="normal"              # 保持可点击状态
+        )
+        self.btn_clear.configure(state="disabled")
+
         # 1. UI 状态锁定
         self.btn_run.configure(state="disabled")
         self.btn_stop.configure(state="normal", text="停止")
@@ -1276,8 +1291,13 @@ class UltraEncoderApp(DnDWindow):
 
     # 重置界面状态（任务结束或停止后）
     def reset_ui_state(self):
-        self.btn_run.configure(text="启动引擎", state="normal")
-        self.btn_stop.configure(text="停止", state="disabled")
+        # --- 【修改】还原按钮为“启动模式” ---
+        self.btn_action.configure(
+            text="COMPRESS / 启动", 
+            fg_color=COLOR_ACCENT, 
+            hover_color=COLOR_ACCENT_HOVER,
+            state="normal"
+        )
         self.btn_clear.configure(state="normal")
         self.update_monitor_layout(force_reset=True)
 
