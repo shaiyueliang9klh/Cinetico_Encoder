@@ -1,4 +1,4 @@
-# Cinetico Encoder
+# Cinético Encoder
 
 <div align="left">
 
