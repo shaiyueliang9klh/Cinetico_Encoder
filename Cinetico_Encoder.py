@@ -544,7 +544,7 @@ class HelpWindow(ctk.CTkToplevel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.geometry("1150x900") 
-        self.title("Ultra Encoder - 架构白皮书")
+        self.title("Cinético - 架构白皮书")
         # 修复：防止窗口在某些情况下被主窗口遮挡，但允许用户最小化
         self.attributes("-topmost", True)
         self.lift()
@@ -570,7 +570,7 @@ class HelpWindow(ctk.CTkToplevel):
         # =======================
         # 第一部分：四大核心黑科技
         # =======================
-        self.add_section_header("🌌 核心架构：为什么 Ultra Encoder 如此之快？", "#E67E22")
+        self.add_section_header("🌌 核心架构：为什么 Cinético 如此之快？", "#E67E22")
         
         feature_frame = ctk.CTkFrame(self.scroll, fg_color="transparent")
         feature_frame.pack(fill="x", padx=10, pady=10)
@@ -639,7 +639,7 @@ class HelpWindow(ctk.CTkToplevel):
         ]
         self.create_grid_table(hw_data, col_weights=[1, 2, 2, 4])
 
-        ctk.CTkLabel(self.scroll, text="Designed by Ultra Encoder Team | Powered by FFmpeg & Python", font=("Arial", 10), text_color="#333").pack(pady=30)
+        ctk.CTkLabel(self.scroll, text="Designed by Cinético Team | Powered by FFmpeg & Python", font=("Arial", 10), text_color="#333").pack(pady=30)
 
     # --- 组件：特性卡片 ---
     def create_feature_card(self, parent, r, c, title, text):
@@ -765,7 +765,7 @@ class UltraEncoderApp(DnDWindow):
     # --- 初始化函数：程序启动时执行这里 ---
     def __init__(self):
         super().__init__()
-        self.title("Ultra Encoder v75 (Stable Edition)")
+        self.title("Cinético v75 (Stable Edition)")
         self.geometry("1300x900")
         self.configure(fg_color=COLOR_BG_MAIN)
         self.minsize(1200, 850) 
@@ -1022,7 +1022,7 @@ class UltraEncoderApp(DnDWindow):
         
         title_box = ctk.CTkFrame(l_head, fg_color="transparent")
         title_box.pack(fill="x")
-        ctk.CTkLabel(title_box, text="ULTRA ENCODER", font=("Impact", 26), text_color="#FFF").pack(side="left")
+        ctk.CTkLabel(title_box, text="Cinético", font=("Impact", 26), text_color="#FFF").pack(side="left")
         
         # 帮助按钮
         btn_help = ctk.CTkButton(title_box, text="❓", width=30, height=30, corner_radius=15, 
