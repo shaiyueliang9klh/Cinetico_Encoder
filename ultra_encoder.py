@@ -749,6 +749,19 @@ class UltraEncoderApp(DnDWindow):
         except Exception as e:
             print(f"Scroll Error: {e}")
 
+    # 【新增】预加载函数
+    def preload_help_window(self):
+        try:
+            self.help_window = HelpWindow(self) # 创建实例
+            self.help_window.withdraw()         # 立即隐藏
+            # 劫持关闭事件：当用户点击关闭时，不销毁，而是隐藏
+            self.help_window.protocol("WM_DELETE_WINDOW", self.hide_help_window)
+        except: pass
+
+    # 【新增】隐藏代替销毁
+    def hide_help_window(self):
+        self.help_window.withdraw()
+
     # --- 初始化函数：程序启动时执行这里 ---
     def __init__(self):
         super().__init__()
@@ -800,14 +813,20 @@ class UltraEncoderApp(DnDWindow):
             self.drop_target_register(DND_FILES)
             self.dnd_bind('<<Drop>>', self.drop_file)
 
+        # 【新增】延迟 200ms 后在后台预加载帮助窗口
+        self.after(200, self.preload_help_window)
+
     # 显示帮助弹窗
     # [修改后] 点击问号时，弹出我们设计好的漂亮窗口
     def show_help(self):
-        # 检查是否已经打开了窗口，防止重复打开
-        if hasattr(self, "help_window") and self.help_window.winfo_exists():
-            self.help_window.lift() # 如果已经打开了，就把它置顶
-        else:
-            self.help_window = HelpWindow(self) # 创建新窗口
+        # 如果窗口还没创建（比如刚启动还没来得及预加载），就现做
+        if not hasattr(self, "help_window") or not self.help_window.winfo_exists():
+            self.preload_help_window()
+        
+        # 显示并置顶
+        self.help_window.deiconify()
+        self.help_window.lift()
+
     # 拖拽文件进来时触发
     def drop_file(self, event):
         files = self.tk.splitlist(event.data)
@@ -850,8 +869,10 @@ class UltraEncoderApp(DnDWindow):
         current = min(self.finished_tasks_count + 1, total)
         if current > total and total > 0: current = total
         
-        txt = f"压制中 ({current}/{total})"
-        try: self.btn_run.configure(text=txt)
+        txt = f"任务队列: {current} / {total}"
+        try: 
+            # 【修改】把状态更新到右上方标题栏旁边的 Label
+            self.lbl_run_status.configure(text=txt) 
         except: pass
 
     # 应用系统优先级
@@ -1027,9 +1048,15 @@ class UltraEncoderApp(DnDWindow):
         l_btm = ctk.CTkFrame(left, fg_color="#222", corner_radius=20)
         l_btm.pack(side="bottom", fill="x", padx=15, pady=20, ipadx=5, ipady=10)        
 
+        # --- 在 setup_ui 函数中，找到 l_btm 部分，替换整个 l_btm 的定义 ---
+        
+        # 底部控制区 (把 padding 改小，pady=10)
+        l_btm = ctk.CTkFrame(left, fg_color="#222", corner_radius=20)
+        l_btm.pack(side="bottom", fill="x", padx=15, pady=20, ipadx=5, ipady=10)
+        
         # --- 1. 优先级选择 ---
         rowP = ctk.CTkFrame(l_btm, fg_color="transparent")
-        rowP.pack(fill="x", pady=(15, 5), padx=15)
+        rowP.pack(fill="x", pady=(10, 5), padx=15) # pady 改小
         ctk.CTkLabel(rowP, text="系统优先级", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
         self.priority_var = ctk.StringVar(value="优先")
         self.seg_priority = ctk.CTkSegmentedButton(rowP, values=["常规", "优先", "极速"], 
@@ -1039,7 +1066,7 @@ class UltraEncoderApp(DnDWindow):
 
         # --- 2. 并发数选择 ---
         row3 = ctk.CTkFrame(l_btm, fg_color="transparent")
-        row3.pack(fill="x", pady=(15, 5), padx=15)
+        row3.pack(fill="x", pady=(10, 5), padx=15) # pady 改小
         ctk.CTkLabel(row3, text="并发任务数量", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
         w_box = ctk.CTkFrame(row3, fg_color="transparent")
         w_box.pack(fill="x")
@@ -1052,7 +1079,7 @@ class UltraEncoderApp(DnDWindow):
         
         # --- 3. 画质滑块 ---
         row2 = ctk.CTkFrame(l_btm, fg_color="transparent")
-        row2.pack(fill="x", pady=15, padx=15)
+        row2.pack(fill="x", pady=(10, 5), padx=15) # 【修改】这里原来是 pady=15，改小了，这就紧凑了
         ctk.CTkLabel(row2, text="CRF 画质控制", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
         c_box = ctk.CTkFrame(row2, fg_color="transparent")
         c_box.pack(fill="x")
@@ -1062,18 +1089,18 @@ class UltraEncoderApp(DnDWindow):
         
         # --- 4. 编码格式选择 ---
         row1 = ctk.CTkFrame(l_btm, fg_color="transparent")
-        row1.pack(fill="x", pady=(5, 20), padx=15) # pady 下方留白大一点，和按钮隔开
+        row1.pack(fill="x", pady=(5, 15), padx=15) # 【修改】下方留白改成 15，和按钮稍微靠近点
         ctk.CTkLabel(row1, text="编码格式", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
         self.codec_var = ctk.StringVar(value="H.264")
         self.seg_codec = ctk.CTkSegmentedButton(row1, values=["H.264", "H.265", "AV1"], variable=self.codec_var, selected_color=COLOR_ACCENT, corner_radius=10)
         self.seg_codec.pack(fill="x", pady=(5, 0))
 
-        # --- 5. 【核心修改】合并后的超级按钮 ---
-        # 放在 l_btm 内部的最下方，实现了“鼠标一路向下”的顺滑体验
+        # --- 5. 启动按钮 ---
+        # 去掉了底部的 pady，让它尽量靠下
         self.btn_action = ctk.CTkButton(l_btm, text="COMPRESS / 启动", height=50, corner_radius=12, 
                                    font=("微软雅黑", 16, "bold"), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, 
-                                   text_color="#000", command=self.toggle_action) # 绑定到新的切换函数
-        self.btn_action.pack(fill="x", padx=15, pady=(0, 10))
+                                   text_color="#000", command=self.toggle_action)
+        self.btn_action.pack(fill="x", padx=15, pady=(0, 5)) # 底部留一点点缝隙即可
 
         # 任务列表滚动区
         self.scroll = ctk.CTkScrollableFrame(left, fg_color="transparent")
@@ -1086,6 +1113,10 @@ class UltraEncoderApp(DnDWindow):
         r_head.pack(fill="x", padx=30, pady=(25, 10))
         ctk.CTkLabel(r_head, text="LIVE MONITOR", font=("Impact", 20), text_color="#333").pack(side="left")
         
+        # 【新增】这里加一个 Label，专门用来显示任务队列状态
+        self.lbl_run_status = ctk.CTkLabel(r_head, text="", font=("微软雅黑", 12, "bold"), text_color=COLOR_ACCENT)
+        self.lbl_run_status.pack(side="left", padx=20, pady=2) # 放在标题右边
+
         self.lbl_gpu = ctk.CTkLabel(r_head, text="GPU: --W | --°C", font=("Consolas", 14, "bold"), text_color="#444")
         self.lbl_gpu.pack(side="right")
         
@@ -1229,20 +1260,15 @@ class UltraEncoderApp(DnDWindow):
         self.running = True
         self.stop_flag = False
         
-        # --- 【修改】更新按钮状态为“停止模式” ---
+        # 【修改】按钮文字固定显示 STOP，不再显示进度
         self.btn_action.configure(
-            text="STOP / 停止", 
-            fg_color=COLOR_ERROR,       # 变成红色
-            hover_color="#C0392B",      # 悬停时是深红色
-            state="normal"              # 保持可点击状态
+            text="STOP / 停止",  # 明确告知用户可以停止
+            fg_color=COLOR_ERROR, 
+            hover_color="#C0392B",
+            state="normal"
         )
         self.btn_clear.configure(state="disabled")
 
-        # 1. UI 状态锁定
-        self.btn_run.configure(state="disabled")
-        self.btn_stop.configure(state="normal", text="停止")
-        self.btn_clear.configure(state="disabled")
-        
         # 2. 重置线程池（防止旧任务僵死）
         self.executor.shutdown(wait=False)
         self.executor = ThreadPoolExecutor(max_workers=16)
@@ -1285,9 +1311,8 @@ class UltraEncoderApp(DnDWindow):
     # [配套修改] 停止函数
     def stop(self):
         self.stop_flag = True
-        self.btn_stop.configure(text="正在停止...")
-        # 注意：不要在这里 executor.shutdown，否则 run 里的 shutdown 会报错或卡顿
-        # 让 worker 线程自己检测 stop_flag 退出即可
+        # 【修改】原来是 self.btn_stop，现在改成 self.btn_action
+        self.btn_action.configure(text="正在停止...", state="disabled")
 
     # 重置界面状态（任务结束或停止后）
     def reset_ui_state(self):
@@ -1298,6 +1323,8 @@ class UltraEncoderApp(DnDWindow):
             hover_color=COLOR_ACCENT_HOVER,
             state="normal"
         )
+        # 【新增】任务结束时，清空右上角的状态文字
+        self.lbl_run_status.configure(text="") 
         self.btn_clear.configure(state="normal")
         self.update_monitor_layout(force_reset=True)
 
