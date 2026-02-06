@@ -6,6 +6,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?style=flat-square&logo=windows)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![AI](https://img.shields.io/badge/Co--Pilot-Gemini-8E75B2?style=flat-square)
+![Downloads](https://img.shields.io/github/downloads/shaiyueliang9klh/DataStream_Encoder/total?style=flat-square&color=orange)
 
 **Queue-based Video Encoding Tool with GPU Acceleration / 支持GPU加速的队列化视频压制工具**
 
