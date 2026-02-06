@@ -1091,6 +1091,9 @@ class UltraEncoderApp(DnDWindow):
         self.seg_worker.pack(side="left", fill="x", expand=True)
         self.gpu_var = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(w_box, text="GPU", width=60, variable=self.gpu_var, progress_color=COLOR_ACCENT).pack(side="right", padx=(10,0))
+        elf.keep_meta_var = ctk.BooleanVar(value=True) # 默认开启
+        self.sw_meta = ctk.CTkSwitch(w_box, text="保留信息", width=80, variable=self.keep_meta_var, progress_color=COLOR_RAM, font=("微软雅黑", 11))
+        self.sw_meta.pack(side="right", padx=(5,0))
         self.hybrid_var = ctk.BooleanVar(value=False)
         self.sw_hybrid = ctk.CTkSwitch(w_box, text="异构分流", width=80, variable=self.hybrid_var, 
                                        progress_color=COLOR_SUCCESS, font=("微软雅黑", 11))
@@ -1628,6 +1631,9 @@ class UltraEncoderApp(DnDWindow):
                     else:
                         cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]) # 现在 cmd 已定义，不会报错了
                 cmd.extend(["-i", input_arg_final])
+                if self.keep_meta_var.get():
+                    # -map_metadata 0 表示从索引为 0 的文件（即输入视频）拷贝所有元数据
+                    cmd.extend(["-map_metadata", "0"])
                 cmd.extend(["-c:v", v_codec])
                 
                 # 设置编码参数 (CRF/QP)
@@ -1766,6 +1772,14 @@ class UltraEncoderApp(DnDWindow):
                 try:
                     self.safe_update(card.set_status, "📦 回写硬盘中...", COLOR_MOVING, STATUS_RUN)
                     shutil.move(working_output_file, final_target_file)
+
+                    if self.keep_meta_var.get():
+                        try:
+                            # copystat 会拷贝权限、最后访问时间、最后修改时间
+                            shutil.copystat(input_file, final_target_file)
+                        except Exception as e:
+                            print(f"时间戳同步失败: {e}")
+
                 except Exception as e:
                     success = False
                     output_log.append(f"[Move Error] Failed to move file back: {e}")
