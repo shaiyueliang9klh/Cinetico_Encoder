@@ -30,17 +30,17 @@ A queue-based video encoding tool **supporting GPU acceleration**. Powered by th
 
 ### 💾 Tiered Buffering Strategy / 分层缓存
 - **Smart Pre-read**: Automatically detects system resources to determine pre-read strategies, utilizing RAM or SSD as cache to balance speed with disk lifespan.
-- **智能预读**：自动检测系统资源以判定预读策略，使用 RAM 或 SSD 作为缓存，平衡速度与磁盘寿命。
+- **智能预读**：自动检测系统资源以判定预读策略，使用 RAM 或 SSD 作为缓存，平衡速度与SSD寿命。
 
 ### 🛡️ System Stability / 系统稳定性
-- **Power Management**: Invokes Windows APIs (`SetThreadExecutionState`) to prevent the system from sleeping during active encoding tasks.
+- **Power Management**: Invokes Windows APIs to prevent the system from sleeping during active encoding tasks.
 - **Thread Priority**: Optimizes thread locking mechanisms to prevent UI freezing during high-load CPU operations.
 - **功耗管理**：调用 Windows 底层 API 防止系统在压制任务进行时自动休眠。
 - **防卡顿优化**：通过优化线程锁机制，防止高负载压制时导致软件界面假死。
 
 ### 🧠 VRAM Monitoring / 显存监控
 - **OOM Prevention**: Real-time monitoring of GPU video memory. The queue is automatically suspended if VRAM is critically low, preventing crashes.
-- **防崩溃机制**：实时监控 GPU 显存状态。当显存不足时自动挂起任务队列，防止因显存溢出 (OOM) 导致程序崩溃。
+- **防崩溃机制**：实时监控 GPU 显存状态。当显存不足时自动挂起任务队列，防止因显存溢出导致程序崩溃。
 
 ---
 
