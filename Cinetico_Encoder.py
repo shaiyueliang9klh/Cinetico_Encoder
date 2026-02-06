@@ -1518,12 +1518,22 @@ class UltraEncoderApp(DnDWindow):
             
             if self.stop_flag: return 
 
+            fname = os.path.basename(input_file)
+
+            # [核心修复] 真正开始压制前，更新监控通道的标题，别让它一直显示“空闲”
+            # 我们把 source_mode 映射成更好看的中文标签
+            mode_map = {"RAM": "内存加速", "SSD_CACHE": "高速缓存", "DIRECT": "磁盘直读", "PENDING": "准备中"}
+            display_tag = mode_map.get(card.source_mode, card.source_mode)
+            
+            # 激活 UI 通道的标题显示
+            self.safe_update(ch_ui.activate, fname, display_tag)
+
             # 初始化变量
             success = False
             output_log = []
             ram_server = None 
             
-            fname = os.path.basename(input_file)
+            
             name, ext = os.path.splitext(fname)
             codec_sel = self.codec_var.get()
             
