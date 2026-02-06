@@ -457,7 +457,7 @@ class MonitorChannel(ctk.CTkFrame):
         self.scope.clear()
 
     # 更新数据：每秒调用多次
-    def update_data(self, fps, prog, eta):
+    def update_data(self, fps, prog, eta, ratio):
         if not self.winfo_exists(): return
         self.scope.add_point(fps)
         self.lbl_fps.configure(text=f"{fps}")
@@ -1543,8 +1543,6 @@ class UltraEncoderApp(DnDWindow):
             # 我们把 source_mode 映射成更好看的中文标签
             mode_map = {"RAM": "内存加速", "SSD_CACHE": "高速缓存", "DIRECT": "磁盘直读", "PENDING": "准备中"}
             display_tag = mode_map.get(card.source_mode, card.source_mode)
-            
-            # 激活 UI 通道的标题显示
             self.safe_update(ch_ui.activate, fname, display_tag)
 
             # 初始化变量
@@ -1619,9 +1617,7 @@ class UltraEncoderApp(DnDWindow):
                 # [核心功能] 异构分流调度
                 is_mixed_mode = self.hybrid_var.get()
                 is_even_slot = (my_slot_idx % 2 == 1) # 0、2通道全GPU，1、3通道CPU解码
-                
-                cmd = ["ffmpeg", "-y"]
-                
+                                
                 if using_gpu:
                     # 如果开启了混合模式且是偶数槽位(通道2/4)，则由CPU解码以解除NVDEC瓶颈
                     if is_mixed_mode and is_even_slot:
@@ -1633,14 +1629,23 @@ class UltraEncoderApp(DnDWindow):
 
                 # === 构建FFmpeg命令 ===
                 cmd = ["ffmpeg", "-y"]
-                if using_gpu: cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
-                
+                if using_gpu: 
+                    # 混合模式判断：通道1、3全GPU，通道2、4(偶数槽位)CPU解码
+                    if is_mixed_mode and is_even_slot:
+                        pass # 14900K 暴力软解
+                    else:
+                        cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
                 cmd.extend(["-i", input_arg_final])
                 cmd.extend(["-c:v", v_codec])
                 
                 # 设置编码参数 (CRF/QP)
                 if using_gpu:
-                    cmd.extend(["-pix_fmt", "yuv420p"])
+                    # 如果是全GPU链路（显存数据），用显卡滤镜转 8-bit
+                    if not (is_mixed_mode and is_even_slot):
+                        cmd.extend(["-vf", "scale_cuda=format=yuv420p"])
+                    else:
+                        # 如果是CPU解码出来的10-bit数据，用软件转 8-bit
+                        cmd.extend(["-pix_fmt", "yuv420p"])
 
                     if "AV1" in codec_sel:
                             cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), 
