@@ -1,8 +1,3 @@
-import sys
-import subprocess
-import os
-import importlib.util
-
 # --- [自动环境配置模块] ---
 # --- [自动环境配置模块] ---
 def check_and_install_dependencies():
@@ -17,7 +12,9 @@ def check_and_install_dependencies():
         ("customtkinter", "customtkinter"),
         ("tkinterdnd2", "tkinterdnd2"),
         ("PIL", "pillow"),
-        ("packaging", "packaging")
+        ("packaging", "packaging"),
+        ("psutil", "psutil"),
+        ("uuid", "uuid")
     ]
     
     installed_any = False
@@ -68,6 +65,8 @@ import socketserver
 from http import HTTPStatus
 from functools import partial # 函数工具，用来固定参数
 from collections import deque
+import uuid        # 用来生成唯一的Token，确保内存服务器的安全性
+import psutil      # 用来检测系统资源使用情况，辅助决策
 
 # =========================================================================
 # === 全局视觉配置 (决定软件长什么样) ===
@@ -368,24 +367,27 @@ import socketserver
 # =========================================================================
 
 # 全局内存存储池 (Key: 文件绝对路径, Value: bytearray 数据)
+# Key: Token字符串, Value: 视频二进制数据
 GLOBAL_RAM_STORAGE = {} 
+# Key: 文件绝对路径, Value: Token字符串 (用于防止重复加载)
+PATH_TO_TOKEN_MAP = {}
 
 class GlobalRamHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args): pass  # 静默模式
     
     def do_GET(self):
         try:
-            # 1. URL 解码：将 "C%3A%5CVideo.mp4" 还原为 "C:\Video.mp4"
-            req_path = urllib.parse.unquote(self.path.lstrip('/'))
+            # 1. 直接获取 Token (去掉开头的 /)
+            token = self.path.lstrip('/')
             
-            # 2. 从全局仓库拿数据
-            video_data = GLOBAL_RAM_STORAGE.get(req_path)
+            # 2. 从仓库拿数据
+            video_data = GLOBAL_RAM_STORAGE.get(token)
             
             if not video_data:
-                self.send_error(404, "File not loaded in RAM")
+                self.send_error(404, "Invalid Token")
                 return
 
-            # 3. 零拷贝读取逻辑
+            # 3. 零拷贝读取逻辑 (保持不变)
             file_size = len(video_data)
             start, end = 0, file_size - 1
             
@@ -393,17 +395,13 @@ class GlobalRamHandler(http.server.SimpleHTTPRequestHandler):
                 try:
                     range_val = self.headers["Range"].split("=")[1]
                     start_str, end_str = range_val.split("-")
-                    
-                    if start_str: 
-                        start = int(start_str)
-                        if end_str: end = int(end_str)
+                    if start_str: start = int(start_str)
+                    if end_str: end = int(end_str)
                     elif end_str: 
-                        # [严谨修正] 处理 bytes=-500 这种情况 (读取最后500字节)
                         start = file_size - int(end_str)
                         end = file_size - 1
                 except: pass
             
-            # 越界检查
             if start >= file_size:
                  self.send_error(416, "Range Not Satisfiable")
                  return
@@ -417,7 +415,6 @@ class GlobalRamHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             
             try: 
-                # [核心] 使用 memoryview 切片，内存零增长
                 self.wfile.write(memoryview(video_data)[start : end + 1])
             except (ConnectionResetError, BrokenPipeError): pass
             
@@ -1336,9 +1333,11 @@ class UltraEncoderApp(DnDWindow):
                                 prog = read_len / file_size
                                 self.safe_update(widget.set_progress, prog, COLOR_READING)
                     
-                    # [修复 2.1] 存入全局字典，且保持 bytearray (禁止转bytes，省一半内存)
-                    GLOBAL_RAM_STORAGE[src_path] = data_buffer
-                    # widget.ram_data = None # 原有引用必须断开
+                    # === [核心修复] 使用 Token 系统 ===
+                    token = str(uuid.uuid4().hex) # 生成唯一 ID
+                    GLOBAL_RAM_STORAGE[token] = data_buffer
+                    PATH_TO_TOKEN_MAP[src_path] = token
+                    # ================================
                     
                     self.safe_update(widget.set_status, "就绪 (内存加速)", COLOR_READY_RAM, STATUS_READY)                    
                     self.safe_update(widget.set_progress, 1, COLOR_READY_RAM)
@@ -1708,12 +1707,12 @@ class UltraEncoderApp(DnDWindow):
             # 确定输入源
             input_arg_final = input_file
             if card.source_mode == "RAM":
-                # [关键修正] 这里的 input_file 已经是 normalized 的 (带反斜杠)
-                # safe='' 表示连斜杠也要编码，确保服务器收到的是 %5C 而不是 /
-                # 这样 GlobalRamHandler 解码后才能得到原始的 Windows 路径
-                safe_path = urllib.parse.quote(input_file, safe='') 
-                input_arg_final = f"http://127.0.0.1:{self.global_port}/{safe_path}"
-                print(f"[Debug] RAM Stream URL: {input_arg_final}") 
+                # [Fix] 使用 Token 获取 URL，彻底根治路径乱码问题
+                token = PATH_TO_TOKEN_MAP.get(input_file)
+                if not token:
+                    raise Exception("Critical: RAM Token lost for this file!")
+                input_arg_final = f"http://127.0.0.1:{self.global_port}/{token}"
+                print(f"[Debug] RAM Stream URL: {input_arg_final}")
             elif card.source_mode == "SSD_CACHE" and card.ssd_cache_path:
                 input_arg_final = card.ssd_cache_path
             
@@ -1763,7 +1762,8 @@ class UltraEncoderApp(DnDWindow):
             # [关键修正] 音频抗抖动参数，修复 Qavg: nan 崩溃
             # -af aresample=async=1: 自动重新采样以修复时间戳抖动
             # -max_muxing_queue_size 1024: 防止队列溢出
-            cmd.extend(["-c:a", "aac", "-b:a", "320k", "-af", "aresample=async=1", "-max_muxing_queue_size", "1024"])
+            # [Fix] 增加 -ar 44100 强制对齐音频采样率，防止 Qavg: nan
+            cmd.extend(["-c:a", "aac", "-b:a", "320k", "-ar", "44100", "-af", "aresample=async=1000", "-max_muxing_queue_size", "4096"])            
             
             cmd.extend(["-progress", "pipe:1", "-nostats", working_output_file])
 
@@ -1855,9 +1855,11 @@ class UltraEncoderApp(DnDWindow):
             self.safe_update(card.set_status, "逻辑崩溃", COLOR_ERROR, STATE_ERROR)
         
         finally:
-            if task_file in GLOBAL_RAM_STORAGE:
-                 del GLOBAL_RAM_STORAGE[task_file]
-                 print(f"[RAM] Released memory for: {fname}")
+            token = PATH_TO_TOKEN_MAP.get(task_file)
+            if token and token in GLOBAL_RAM_STORAGE:
+                 del GLOBAL_RAM_STORAGE[token]
+                 del PATH_TO_TOKEN_MAP[task_file]
+                 print(f"[RAM] Released memory token: {token}")
             
             card.ram_cost = 0.0
             self.safe_update(ch_ui.reset)
