@@ -4,29 +4,30 @@ import os
 import importlib.util
 
 # --- [自动环境配置模块] ---
+# --- [自动环境配置模块] ---
 def check_and_install_dependencies():
     import shutil
-    # 这里列出脚本需要的所有第三方库
-    # 格式: ("导入时的名字", "pip安装时的名字")
+    import sys
+    import subprocess
+    import importlib.util
+    # [修正] 必须在此处导入 ctypes，确保弹窗功能可用
+    import ctypes 
+
     required_packages = [
         ("customtkinter", "customtkinter"),
         ("tkinterdnd2", "tkinterdnd2"),
-        ("PIL", "pillow"),   # customtkinter 依赖 pillow
+        ("PIL", "pillow"),
         ("packaging", "packaging")
     ]
     
-    # 标记是否有新安装的库
     installed_any = False
-    
     print("--------------------------------------------------")
     print("正在检查运行环境...")
 
     for import_name, package_name in required_packages:
-        # 检查库是否已存在
         if importlib.util.find_spec(import_name) is None:
             print(f"⚠️ 发现缺失组件: {package_name}，正在自动安装...")
             try:
-                # 调用 pip 安装，并使用清华源加速 (针对国内网络优化)
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", package_name, 
                     "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -34,27 +35,20 @@ def check_and_install_dependencies():
                 print(f"✅ {package_name} 安装成功！")
                 installed_any = True
             except subprocess.CalledProcessError:
-                print(f"❌ {package_name} 安装失败！请手动运行: pip install {package_name}")
-                input("按回车键退出...")
+                # [修正] 弹窗提示，避免黑框直接闪退用户一脸懵
+                ctypes.windll.user32.MessageBoxW(0, f"自动安装失败: {package_name}\n请手动运行: pip install {package_name}", "环境错误", 0x10)
                 sys.exit(1)
         else:
             print(f"✔ {package_name} 已安装")
 
-    # 检查 FFmpeg 是否存在 (这是外部软件，Python 没法直接装，但得提示)
     if not shutil.which("ffmpeg"):
-        print("\n❌ 严重错误: 未检测到 FFmpeg！")
-        print("请下载 FFmpeg 并将其 bin 文件夹添加到系统环境变量 Path 中。")
-        print("本脚本必须依赖 FFmpeg 才能工作。")
-        input("按回车键退出...")
-        # 注意：这里不强制退出，因为可能在某些特殊环境下能运行，
-        # 但主程序里的 sys_check 会再次拦截。
+        # [修正] FFmpeg 缺失弹窗提醒
+        ctypes.windll.user32.MessageBoxW(0, "未检测到 FFmpeg！\n请下载 FFmpeg 并将其 bin 目录添加到系统环境变量 Path 中。", "核心组件缺失", 0x10)
     
     if installed_any:
         print("\n🎉 所有依赖库安装完成！正在启动程序...")
-        print("--------------------------------------------------\n")
     else:
         print("✔ 环境完整，准备启动...")
-        print("--------------------------------------------------\n")
 
 # 执行检查
 check_and_install_dependencies()
@@ -357,6 +351,80 @@ def find_best_cache_drive(source_drive_letter=None, manual_override=None):
     if candidates: return candidates[0]["path"]
     else: return "C:\\"
 
+# [新增] 必须补全这两个库，否则会报错
+import urllib.parse 
+import socketserver
+
+# =========================================================================
+# === [架构重构 2.1 & 2.2] 全局内存仓库与单例服务器 ===
+# =========================================================================
+
+# 全局内存存储池 (Key: 文件绝对路径, Value: bytearray 数据)
+GLOBAL_RAM_STORAGE = {} 
+
+class GlobalRamHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args): pass  # 静默模式
+    
+    def do_GET(self):
+        try:
+            # 1. URL 解码：将 "C%3A%5CVideo.mp4" 还原为 "C:\Video.mp4"
+            req_path = urllib.parse.unquote(self.path.lstrip('/'))
+            
+            # 2. 从全局仓库拿数据
+            video_data = GLOBAL_RAM_STORAGE.get(req_path)
+            
+            if not video_data:
+                self.send_error(404, "File not loaded in RAM")
+                return
+
+            # 3. 零拷贝读取逻辑
+            file_size = len(video_data)
+            start, end = 0, file_size - 1
+            
+            if "Range" in self.headers:
+                try:
+                    range_val = self.headers["Range"].split("=")[1]
+                    start_str, end_str = range_val.split("-")
+                    
+                    if start_str: 
+                        start = int(start_str)
+                        if end_str: end = int(end_str)
+                    elif end_str: 
+                        # [严谨修正] 处理 bytes=-500 这种情况 (读取最后500字节)
+                        start = file_size - int(end_str)
+                        end = file_size - 1
+                except: pass
+            
+            # 越界检查
+            if start >= file_size:
+                 self.send_error(416, "Range Not Satisfiable")
+                 return
+
+            chunk_len = (end - start) + 1
+            self.send_response(HTTPStatus.PARTIAL_CONTENT if "Range" in self.headers else HTTPStatus.OK)
+            self.send_header("Content-Type", "video/mp4") 
+            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+            self.send_header("Content-Length", str(chunk_len))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            
+            try: 
+                # [核心] 使用 memoryview 切片，内存零增长
+                self.wfile.write(memoryview(video_data)[start : end + 1])
+            except (ConnectionResetError, BrokenPipeError): pass
+            
+        except Exception as e:
+            print(f"Global Server Error: {e}")
+
+def start_global_server():
+    # 端口 0 让系统自动分配，ThreadedTCPServer 确保不阻塞
+    server = socketserver.ThreadingTCPServer(('127.0.0.1', 0), GlobalRamHandler)
+    server.daemon_threads = True
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"[Core] Global Memory Server started on port {port}")
+    return server, port
+
 # =========================================================================
 # === UI 组件定义 (这里定义界面上的小方块长什么样) ===
 # =========================================================================
@@ -543,7 +611,7 @@ class TaskCard(ctk.CTkFrame):
         
     # 清理内存：任务完成后释放
     def clean_memory(self):
-        self.ram_data = None
+        # self.ram_data = None # 此行已废弃
         self.source_mode = "PENDING"
         self.ssd_cache_path = None
 
@@ -819,6 +887,8 @@ class UltraEncoderApp(DnDWindow):
         self.finished_tasks_count = 0
 
         self.setup_ui() # 构建界面
+        # [架构修正] 启动全局流媒体服务器 (单例模式)
+        self.global_server, self.global_port = start_global_server()
         disable_power_throttling() # 性能全开
         set_execution_state(True)  # 禁止休眠
         
@@ -1247,8 +1317,11 @@ class UltraEncoderApp(DnDWindow):
                                 prog = read_len / file_size
                                 self.safe_update(widget.set_progress, prog, COLOR_READING)
                     
-                    widget.ram_data = bytes(data_buffer) 
-                    self.safe_update(widget.set_status, "就绪 (内存加速)", COLOR_READY_RAM, STATUS_READY)
+                    # [修复 2.1] 存入全局字典，且保持 bytearray (禁止转bytes，省一半内存)
+                    GLOBAL_RAM_STORAGE[src_path] = data_buffer
+                    # widget.ram_data = None # 原有引用必须断开
+                    
+                    self.safe_update(widget.set_status, "就绪 (内存加速)", COLOR_READY_RAM, STATUS_READY)                    
                     self.safe_update(widget.set_progress, 1, COLOR_READY_RAM)
                     widget.source_mode = "RAM"
                     return True
@@ -1500,10 +1573,45 @@ class UltraEncoderApp(DnDWindow):
             with self.queue_lock:
                 if input_file in self.preloading_tasks:
                     self.preloading_tasks.remove(input_file)
+
+    # [新增] 硬件解码能力探针
+    # 原理：尝试用 GPU 解码第1帧，如果报错，说明不支持该格式（如 4:2:2 10bit）
+    def check_gpu_decode_capability(self, input_path):
+        try:
+            # 构建一个只解码不输出的测试命令
+            # -hwaccel cuda: 尝试调用 cuda 解码
+            # -vframes 1: 只解1帧，速度极快
+            # -f null -: 输出扔进黑洞
+            cmd = [
+                "ffmpeg", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
+                "-i", input_path, "-vframes", "1", "-f", "null", "-"
+            ]
+            
+            # 隐藏黑框
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+            # 运行测试
+            ret = subprocess.run(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                startupinfo=si,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            
+            # 返回码为0表示成功，非0表示显卡解不了
+            return (ret.returncode == 0)
+        except:
+            return False
+
     # --- 任务执行函数 (Process) ---
     # 这是一个工人，负责具体压制一个视频
     def process(self, input_file):
         my_slot_idx = None
+        # [新增] 获取输入文件大小，供后续计算压缩率使用
+        input_size = os.path.getsize(input_file)
+
         try:
             if self.stop_flag: return
             
@@ -1602,19 +1710,34 @@ class UltraEncoderApp(DnDWindow):
             try: 
                 self.safe_update(card.set_status, "▶️ 编码中...", COLOR_ACCENT, STATUS_RUN)
 
-                # 确定输入源（内存URL 或 文件路径）
+                # [修正] 确定输入源
                 input_arg_final = input_file
                 if card.source_mode == "RAM":
-                    try:
-                        if not ram_server:
-                            ram_server, port, _ = start_ram_server(card.ram_data)
-                        input_arg_final = f"http://127.0.0.1:{port}/stream.mp4"
-                    except:
-                        input_arg_final = input_file
+                    # 1. 路径编码 (安全处理中文、空格、特殊符号)
+                    # 例如 "C:\我的 视频.mp4" -> "C%3A%5C%E6%88%91%E7%9A%84%20%E8%A7%86%E9%A2%91.mp4"
+                    safe_path = urllib.parse.quote(input_file)
+                    
+                    # 2. 指向全局端口
+                    input_arg_final = f"http://127.0.0.1:{self.global_port}/{safe_path}"
+                    
                 elif card.source_mode == "SSD_CACHE": 
                     input_arg_final = card.ssd_cache_path
 
-                # 选择FFmpeg编码器
+                # [检测] 显卡是否支持硬解该文件
+                # 默认为 False，只有当开关开启且通过探针测试才为 True
+                hw_decode_supported = False
+            
+                if using_gpu:
+                    self.safe_update(card.set_status, "🔍 检测硬解兼容性...", COLOR_WAITING, STATUS_RUN)
+                    # 对每个文件单独检测！
+                    if self.check_gpu_decode_capability(input_arg_final if "http" not in input_arg_final else input_file):
+                        hw_decode_supported = True
+                    else:
+                        print(f"[{fname}] GPU不支持硬解 (可能是4:2:2格式)，切换为 CPU解码 -> GPU编码 模式")
+
+                self.safe_update(card.set_status, "▶️ 编码中...", COLOR_ACCENT, STATUS_RUN)
+
+                # 选择FFmpeg编码器 (输出端)
                 if using_gpu:
                     if "H.265" in codec_sel: v_codec = "hevc_nvenc"
                     elif "AV1" in codec_sel: v_codec = "av1_nvenc"
@@ -1624,50 +1747,53 @@ class UltraEncoderApp(DnDWindow):
                     elif "AV1" in codec_sel: v_codec = "libaom-av1"
                     else: v_codec = "libx264"
 
-                input_size = os.path.getsize(input_file) # 获取原文件大小
-                
                 # [核心功能] 异构分流调度
                 is_mixed_mode = self.hybrid_var.get()
-                is_even_slot = (my_slot_idx % 2 == 1) # 0、2通道全GPU，1、3通道CPU解码
-                                
+                is_even_slot = (my_slot_idx % 2 == 1) 
+            
                 # === 构建FFmpeg命令 ===
-                cmd = ["ffmpeg", "-y"] # 1. 先创建列表
-                if using_gpu: 
-                    # 2. 再根据逻辑添加参数
-                    if is_mixed_mode and is_even_slot:
-                        pass # 14900K 暴力软解
-                    else:
-                        cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]) # 现在 cmd 已定义，不会报错了
+                cmd = ["ffmpeg", "-y"] 
+            
+                # [关键逻辑修正]
+                # 只有在 (想用GPU) AND (没开启异构分流的CPU通道) AND (显卡确实能硬解) 时，才开启 hwaccel
+                if using_gpu and not (is_mixed_mode and is_even_slot) and hw_decode_supported:
+                    cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+            
+                # 否则，FFmpeg 默认就会用 CPU 解码，无需额外参数，直接读入即可
+            
                 cmd.extend(["-i", input_arg_final])
+            
                 if self.keep_meta_var.get():
-                    # -map_metadata 0 表示从索引为 0 的文件（即输入视频）拷贝所有元数据
                     cmd.extend(["-map_metadata", "0"])
+            
                 cmd.extend(["-c:v", v_codec])
-                
+            
                 # 设置编码参数 (CRF/QP)
                 if using_gpu:
-                    # 如果是全GPU链路（显存数据），用显卡滤镜转 8-bit
-                    if not (is_mixed_mode and is_even_slot):
+                    # 只有当它是全链路 GPU (解码+编码) 时，才需要用 scale_cuda
+                    if hw_decode_supported and not (is_mixed_mode and is_even_slot):
                         cmd.extend(["-vf", "scale_cuda=format=yuv420p"])
                     else:
-                        # 如果是CPU解码出来的10-bit数据，用软件转 8-bit
+                        # 如果是 CPU 解码 (不论是因为不支持硬解，还是因为异构分流)，
+                        # 此时数据在内存里是普通的 YUV，需要用软件滤镜转格式，再传给 NVENC
                         cmd.extend(["-pix_fmt", "yuv420p"])
 
                     if "AV1" in codec_sel:
-                            cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), 
-                                "-preset", "p5", "-b:v", "0"]) 
+                            cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), "-preset", "p5", "-b:v", "0"]) 
                     else:
-                        cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), 
-                                    "-preset", "p6", "-b:v", "0"])
+                        cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), "-preset", "p6", "-b:v", "0"])
                 else:
+                    # 纯 CPU 模式
                     cmd.extend(["-pix_fmt", "yuv420p"])
                     cmd.extend(["-crf", str(self.crf_var.get()), "-preset", "medium"])
-                    # 【重要】限制CPU线程数，防止卡死
-                    cmd.extend(["-threads", "4"])
-                
-                # 复制音频，不重编码音频
+                    # [CPU优化] 限制线程数，防止系统卡死
+                    # 设为 0 让 FFmpeg 自动判断，但配合 PriorityClass 限制优先级
+                    # 如果用户反馈卡顿，可以改为 "-threads", "8"
+                    cmd.extend(["-threads", "0"])
+            
+                # 音频和其他参数保持不变...
                 cmd.extend(["-c:a", "copy", "-progress", "pipe:1", "-nostats", working_output_file])
-                
+
                 # 获取总时长用于计算进度
                 dur_file = input_file 
                 duration = self.get_dur(dur_file)
@@ -1749,7 +1875,19 @@ class UltraEncoderApp(DnDWindow):
                     with self.gpu_lock:
                         self.gpu_active_count -= 1
                         if self.gpu_active_count < 0: self.gpu_active_count = 0
+                # [安全修正] 使用 .pop() 防止 KeyError 崩溃
+                # 无论之前是否使用了内存，尝试清理总是安全的
+                GLOBAL_RAM_STORAGE.pop(input_file, None)
             
+                # 清理状态
+                card.clean_memory()
+                if card.ssd_cache_path:
+                    try: 
+                        os.remove(card.ssd_cache_path)
+                        self.temp_files.remove(card.ssd_cache_path)
+                    except: pass
+
+
             # 处理停止信号
             if self.stop_flag: 
                 if ram_server: ram_server.shutdown(); ram_server.server_close()
@@ -1810,7 +1948,8 @@ class UltraEncoderApp(DnDWindow):
                  # 失败处理
                  if not self.stop_flag:
                      self.safe_update(card.set_status, "失败 (点击看日志)", COLOR_ERROR, STATUS_ERR)
-                     err_msg = "\n".join(output_log[-30:]) 
+                     # [修复] deque 不支持切片，必须先转成 list
+                     err_msg = "\n".join(list(output_log)[-30:])
                      def show_err():
                          messagebox.showerror(f"任务失败: {fname}", f"FFmpeg 报错日志 (最后30行):\n\n{err_msg}")
                      self.safe_update(show_err)
