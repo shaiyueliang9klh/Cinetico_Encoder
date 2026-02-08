@@ -940,21 +940,23 @@ class UltraEncoderApp(DnDWindow):
             existing_paths = set(os.path.normpath(os.path.abspath(f)) for f in self.file_queue)
             new_added = False
             for f in files:
+                # [关键修正] 无论来源如何，先强制转为 Windows 标准路径 (带反斜杠)
                 f_norm = os.path.normpath(os.path.abspath(f))
+                
                 if f_norm in existing_paths: continue # 如果已存在，跳过
-                if f.lower().endswith(('.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv', '.wmv')):
-                    self.file_queue.append(f)
+                
+                if f_norm.lower().endswith(('.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv', '.wmv')):
+                    self.file_queue.append(f_norm) # [Fix] 必须存入 standardized path
                     existing_paths.add(f_norm) 
-                    if f not in self.task_widgets:
+                    if f_norm not in self.task_widgets:
                         # 创建一个新的任务卡片
-                        card = TaskCard(self.scroll, 0, f) 
-                        self.task_widgets[f] = card
+                        card = TaskCard(self.scroll, 0, f_norm) 
+                        self.task_widgets[f_norm] = card
                     new_added = True
             
             if not new_added: return
             
-            # --- [核心修复] 按文件体积从低到高排序 ---
-            # lambda x: os.path.getsize(x) 会获取每个路径对应的文件大小作为排序依据
+            # 按文件体积从低到高排序
             self.file_queue.sort(key=lambda x: os.path.getsize(x))
 
             # 刷新界面上的列表显示
@@ -1636,25 +1638,43 @@ class UltraEncoderApp(DnDWindow):
             print(f"IO Error: {e}")
             self.safe_update(card.set_status, "IO 错误", COLOR_ERROR, STATE_ERROR)
 
-    # --- [新增] 突击手：只负责计算 (FFmpeg) ---
-# --- [修正] 突击手：只负责计算 (FFmpeg) ---
+# --- [升级] 智能日志分析器 ---
+    def analyze_ffmpeg_log(self, logs):
+        log_text = "\n".join(logs[-30:]) # 看得更远一点
+        
+        error_patterns = [
+            ("Permission denied", "❌ 文件权限不足 (被占用?)"),
+            ("No such file", "❌ 找不到输入文件 (路径乱码?)"),
+            ("Unknown encoder", "❌ 找不到编码器 (驱动问题?)"),
+            ("Device mismatch", "❌ 显卡设备不匹配 (请关闭异构分流)"),
+            ("out of memory", "❌ 显存/内存不足 (OOM)"),
+            ("Tag", "❌ 容器格式不兼容 (如 FLAC->MP4)"),
+            ("Invalid data", "❌ 数据流损坏 (RAM读取失败)"),
+            ("Server returned 404", "❌ 内存数据丢失 (Key不匹配)"),
+            ("Qavg: nan", "❌ 音频编码崩溃 (流媒体时间戳错乱)"), # [新增]
+            ("aac", "❌ 音频格式错误"), # [新增]
+        ]
+        
+        for pattern, reason in error_patterns:
+            if pattern in log_text or pattern.lower() in log_text.lower():
+                return reason
+        
+        return "❌ 未知错误 (建议检查输入文件是否损坏)"
+
+    # --- [修正 V4.3] 突击手：路径强一致性 + 音频抗抖动 ---
     def _worker_compute_task(self, task_file):
         card = self.task_widgets[task_file]
-        
-        # [Fix 1] 提前定义 fname，防止 finally 块找不到变量报错
         fname = os.path.basename(task_file)
 
-        # 1. [新增] 申请监控通道 (UI Slot)
-        # 必须给这个任务分配右侧的一个波形图窗口
+        # 1. 申请监控通道
         slot_idx = -1
         ch_ui = None
         with self.slot_lock:
             if self.available_indices:
-                slot_idx = self.available_indices.pop(0) # 拿走一个空闲号牌
+                slot_idx = self.available_indices.pop(0)
                 if slot_idx < len(self.monitor_slots):
                     ch_ui = self.monitor_slots[slot_idx]
         
-        # 如果没拿到通道（理论上不应该发生，因为engine控制了并发数），就创建一个假的占位符防止报错
         if not ch_ui: 
             class DummyUI: 
                 def activate(self, *a): pass
@@ -1665,20 +1685,17 @@ class UltraEncoderApp(DnDWindow):
         try:
             self.safe_update(card.set_status, "▶️ 编码中...", COLOR_ACCENT, STATE_ENCODING)
             
-            # --- 2. [补全] 初始化缺失的变量 ---
             input_file = task_file
             input_size = os.path.getsize(input_file)
             f_name_no_ext = os.path.splitext(fname)[0]
             
-            # 确定输出文件名 (在原文件名后加 _Cinético)
             output_dir = os.path.dirname(input_file)
             working_output_file = os.path.join(output_dir, f"{f_name_no_ext}_Cinético.mp4")
             
-            # 获取用户设置
             codec_sel = self.codec_var.get()
             using_gpu = self.should_use_gpu(codec_sel)
             
-            # 确定 FFmpeg 编码器名称
+            # 确定编码器
             v_codec = "libx264"
             if "H.265" in codec_sel: v_codec = "libx265"
             elif "AV1" in codec_sel: v_codec = "libsvtav1"
@@ -1688,42 +1705,38 @@ class UltraEncoderApp(DnDWindow):
                 elif "H.265" in codec_sel: v_codec = "hevc_nvenc"
                 elif "AV1" in codec_sel: v_codec = "av1_nvenc"
 
-            # --- 3. [补全] 确定输入源 (RAM / Cache / Direct) ---
-            # 这是“零拷贝环回”的核心：决定 FFmpeg 读哪里
-            input_arg_final = input_file # 默认直读
-            
+            # 确定输入源
+            input_arg_final = input_file
             if card.source_mode == "RAM":
-                # 构造 HTTP URL
-                safe_path = urllib.parse.quote(input_file)
+                # [关键修正] 这里的 input_file 已经是 normalized 的 (带反斜杠)
+                # safe='' 表示连斜杠也要编码，确保服务器收到的是 %5C 而不是 /
+                # 这样 GlobalRamHandler 解码后才能得到原始的 Windows 路径
+                safe_path = urllib.parse.quote(input_file, safe='') 
                 input_arg_final = f"http://127.0.0.1:{self.global_port}/{safe_path}"
+                print(f"[Debug] RAM Stream URL: {input_arg_final}") 
             elif card.source_mode == "SSD_CACHE" and card.ssd_cache_path:
                 input_arg_final = card.ssd_cache_path
             
-            # --- 4. [补全] 异构计算逻辑 ---
-            # 判断是否开启异构分流 (偶数通道用CPU，奇数用GPU，或者全GPU)
+            # 异构判断
             is_mixed_mode = self.hybrid_var.get()
-            # 这里用 slot_idx 来判断奇偶，实现任务分流
             is_even_slot = (slot_idx % 2 == 0) 
-            
-            # 检测显卡是否支持硬解 (防止 4:2:2 10bit 导致硬解报错)
             hw_decode_supported = self.check_gpu_decode_capability(input_file) if using_gpu else False
 
-            # 激活 UI 监控
+            # UI 更新
             tag_info = "GPU Accel" if using_gpu else "CPU Software"
             if is_mixed_mode and is_even_slot: tag_info = "Hybrid CPU"
             self.safe_update(ch_ui.activate, fname, tag_info)
 
-            # === 构建FFmpeg命令 ===
+            # === 构建 FFmpeg 命令 ===
             cmd = ["ffmpeg", "-y"] 
             
-            # [关键逻辑] 硬件解码配置
-            # 只有在 (想用GPU) AND (没被分流到CPU) AND (显卡确实能硬解) 时，才开启 hwaccel
+            # [关键] 硬件解码开关
             if using_gpu and not (is_mixed_mode and is_even_slot) and hw_decode_supported:
                 cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
             
-            # 增加 probesize 防止读取网络流时获取不到信息
+            # RAM 模式加大探测缓冲
             if card.source_mode == "RAM":
-                cmd.extend(["-probesize", "32M", "-analyzeduration", "10M"])
+                cmd.extend(["-probesize", "100M", "-analyzeduration", "50M"])
 
             cmd.extend(["-i", input_arg_final])
                 
@@ -1732,39 +1745,38 @@ class UltraEncoderApp(DnDWindow):
                 
             cmd.extend(["-c:v", v_codec])
                 
-            # 设置编码参数 (CRF/QP)
             if using_gpu:
-                # 只有当它是全链路 GPU (解码+编码) 时，才需要用 scale_cuda
                 if hw_decode_supported and not (is_mixed_mode and is_even_slot):
                     cmd.extend(["-vf", "scale_cuda=format=yuv420p"])
                 else:
-                    # CPU解码 -> GPU编码，需要手动转格式
                     cmd.extend(["-pix_fmt", "yuv420p"])
 
-                # AV1 和 H264/5 的参数略有不同
                 if "AV1" in codec_sel:
                      cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), "-preset", "p5", "-b:v", "0"]) 
                 else:
                     cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), "-preset", "p6", "-b:v", "0"])
             else:
-                # 纯 CPU 模式
                 cmd.extend(["-pix_fmt", "yuv420p"])
                 cmd.extend(["-crf", str(self.crf_var.get()), "-preset", "medium"])
                 cmd.extend(["-threads", "0"])
-                
-            cmd.extend(["-c:a", "copy", "-progress", "pipe:1", "-nostats", working_output_file])
+            
+            # [关键修正] 音频抗抖动参数，修复 Qavg: nan 崩溃
+            # -af aresample=async=1: 自动重新采样以修复时间戳抖动
+            # -max_muxing_queue_size 1024: 防止队列溢出
+            cmd.extend(["-c:a", "aac", "-b:a", "320k", "-af", "aresample=async=1", "-max_muxing_queue_size", "1024"])
+            
+            cmd.extend(["-progress", "pipe:1", "-nostats", working_output_file])
 
-            # 获取总时长用于计算进度
             duration = self.get_dur(input_file)
-            output_log = [] # [补全] 初始化日志列表
+            output_log = [] 
                     
-            # 启动子进程
+            # 启动进程
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=si)
             self.active_procs.append(proc)
-                    
-            # 设置进程优先级
+            
+            # 优先级调整
             try:
                 p_val = {"常规": PRIORITY_NORMAL, "优先": PRIORITY_ABOVE, "极速": PRIORITY_HIGH}.get(self.priority_var.get(), PRIORITY_ABOVE)
                 h_sub = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, proc.pid)
@@ -1774,7 +1786,7 @@ class UltraEncoderApp(DnDWindow):
                     ctypes.windll.kernel32.CloseHandle(h_sub)
             except: pass
 
-            # --- 循环读取 FFmpeg 输出 ---
+            # 读取日志循环
             progress_stats = {"fps": "0", "out_time_us": "0", "speed": "0x", "frame": "0"}
             start_t = time.time()
             last_ui_update_time = 0 
@@ -1785,6 +1797,7 @@ class UltraEncoderApp(DnDWindow):
                     line_str = line.decode('utf-8', errors='ignore').strip()
                     if not line_str: continue
                     output_log.append(line_str)
+                    if len(output_log) > 100: output_log.pop(0)
             
                     if "=" in line_str:
                         for item in line_str.split():
@@ -1793,7 +1806,7 @@ class UltraEncoderApp(DnDWindow):
                                 progress_stats[k] = v 
                 
                         now = time.time()
-                        if now - last_ui_update_time > 0.3: # 限制刷新率
+                        if now - last_ui_update_time > 0.3: 
                             current_fps = int(float(progress_stats.get("fps", 0)))
                             us = int(progress_stats.get("out_time_us", 0))
                             current_sec = us / 1000000.0
@@ -1807,7 +1820,6 @@ class UltraEncoderApp(DnDWindow):
                                     eta_sec = (elap / prog - elap)
                                     eta = f"{int(eta_sec//60):02d}:{int(eta_sec%60):02d}"
                     
-                            # 计算实时压缩率
                             current_ratio = 0
                             if os.path.exists(working_output_file) and prog > 0.01:
                                 try:
@@ -1823,36 +1835,36 @@ class UltraEncoderApp(DnDWindow):
             proc.wait()
             if proc in self.active_procs: self.active_procs.remove(proc)
 
-            # 判断任务结果
+            # 结果判定
             if self.stop_flag:
                 self.safe_update(card.set_status, "已停止", COLOR_PAUSED, STATE_PENDING)
-                # 如果是停止，不删除缓存，方便下次继续（或者你可以选择删除）
             elif proc.returncode == 0:
                 self.safe_update(card.set_status, "完成", COLOR_SUCCESS, STATE_DONE)
                 self.safe_update(card.set_progress, 1.0, COLOR_SUCCESS)
             else:
-                self.safe_update(card.set_status, "FFmpeg 报错", COLOR_ERROR, STATE_ERROR)
-                print("\n".join(output_log[-10:])) # 打印最后10行日志
+                error_reason = self.analyze_ffmpeg_log(output_log)
+                self.safe_update(card.set_status, "转码失败", COLOR_ERROR, STATE_ERROR)
+                
+                print(f"\n[Error Dump] Task: {fname}")
+                print("\n".join(output_log[-20:])) 
+                
+                self.safe_update(messagebox.showerror, "压制失败", f"文件: {fname}\n原因: {error_reason}\n\n请查看控制台获取详细日志。")
 
         except Exception as e:
             print(f"Compute Error: {e}")
-            self.safe_update(card.set_status, "逻辑错误", COLOR_ERROR, STATE_ERROR)
+            self.safe_update(card.set_status, "逻辑崩溃", COLOR_ERROR, STATE_ERROR)
         
         finally:
-            # [关键] 任务结束必须释放两样东西：
-            # 1. 内存 (Global RAM)
             if task_file in GLOBAL_RAM_STORAGE:
                  del GLOBAL_RAM_STORAGE[task_file]
                  print(f"[RAM] Released memory for: {fname}")
             
             card.ram_cost = 0.0
-            
-            # 2. 归还通道号牌 (UI Slot)
-            self.safe_update(ch_ui.reset) # 清空 UI 显示
+            self.safe_update(ch_ui.reset)
             with self.slot_lock:
                 if slot_idx != -1:
                     self.available_indices.append(slot_idx)
-                    self.available_indices.sort() # 排序，优先使用前面的通道
+                    self.available_indices.sort()
 
 # 程序入口
 if __name__ == "__main__":
