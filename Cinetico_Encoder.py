@@ -495,82 +495,74 @@ class MonitorChannel(ctk.CTkFrame):
         self.lbl_ratio.configure(text="Ratio: --%", text_color="#333")
         self.scope.clear()
 
-# 自定义控件：任务卡片 (TaskCard) - 左边列表中每一行
+# 自定义控件：任务卡片 (TaskCard) - [V3.1 对齐修复版]
 class TaskCard(ctk.CTkFrame):
     def __init__(self, master, index, filepath, **kwargs):
         super().__init__(master, fg_color=COLOR_CARD, corner_radius=10, border_width=0, **kwargs)
+        
+        # 配置列权重
         self.grid_columnconfigure(1, weight=1)
-        # 初始化卡片状态
-        self.status_code = STATUS_WAIT 
+        
+        self.filepath = filepath
+        self.status_code = STATE_PENDING 
         self.ram_data = None 
         self.ssd_cache_path = None
         self.source_mode = "PENDING"
-        self.filepath = filepath
         
-        # [新增] 预先获取文件大小，供总指挥计算预算
-        try:
-            self.file_size_gb = os.path.getsize(filepath) / (1024**3)
-        except:
-            self.file_size_gb = 0.0
+        try: self.file_size_gb = os.path.getsize(filepath) / (1024**3)
+        except: self.file_size_gb = 0.0
         
-        self.ram_cost = 0.0 # 实际占用的 RAM (只有加载进内存才算)
-        self.status_code = STATE_PENDING # 初始化状态
-
-        # 序号
-        self.lbl_index = ctk.CTkLabel(self, text=f"{index:02d}", font=("Impact", 20), text_color="#555")
-        self.lbl_index.grid(row=0, column=0, rowspan=2, padx=(10, 5))
+        # --- 1. 序号 (左侧) ---
+        # [修改点 1] width=50: 强制给它 50px 的固定宽度，不再随文字变宽变窄
+        # [修改点 2] anchor="e": 让数字靠右对齐 (或者用 "center" 居中)，这样 "9" 和 "10" 的个位数能对齐
+        self.lbl_index = ctk.CTkLabel(self, text=f"{index:02d}", font=("Impact", 22), 
+                                      text_color="#555", width=50, anchor="center")
+        # padx=(5, 5): 因为有了固定宽度，外边距可以稍微改小一点，保持视觉平衡
+        self.lbl_index.grid(row=0, column=0, rowspan=2, padx=(5, 5), pady=0) 
         
-        # 文件名
+        # --- 2. 文件名区域 (中间上部) ---
+        # 现在的 column 1 绝对是从左边第 60px (50px宽+10px间距) 的位置开始，绝对对齐！
         name_frame = ctk.CTkFrame(self, fg_color="transparent")
-        name_frame.grid(row=0, column=1, sticky="w", padx=5, pady=(8,0))
-        ctk.CTkLabel(name_frame, text=os.path.basename(filepath), font=("微软雅黑", 12, "bold"), text_color="#EEE", anchor="w").pack(side="left")
+        name_frame.grid(row=0, column=1, sticky="sw", padx=0, pady=(8, 0)) 
         
-        # 打开文件夹按钮
-        self.btn_open = ctk.CTkButton(self, text="📂", width=30, height=24, fg_color="#444", hover_color="#555", 
-                                      font=("Segoe UI Emoji", 12), command=self.open_location)
+        ctk.CTkLabel(name_frame, text=os.path.basename(filepath), font=("微软雅黑", 12, "bold"), 
+                     text_color="#EEE", anchor="w").pack(side="left")
+        
+        # --- 3. 文件夹按钮 (右侧) ---
+        self.btn_open = ctk.CTkButton(self, text="📂", width=28, height=22, fg_color="#444", hover_color="#555", 
+                                      font=("Segoe UI Emoji", 11), command=self.open_location)
         self.btn_open.grid(row=0, column=2, padx=10, pady=(8,0), sticky="e")
         
-        # 状态文字
-        self.lbl_status = ctk.CTkLabel(self, text="等待处理", font=("Arial", 10), text_color="#888", anchor="w")
-        self.lbl_status.grid(row=1, column=1, sticky="w", padx=5, pady=(0,8))
+        # --- 4. 状态文字 (中间下部) ---
+        self.lbl_status = ctk.CTkLabel(self, text="等待处理", font=("Arial", 10), text_color="#888", anchor="nw")
+        self.lbl_status.grid(row=1, column=1, sticky="nw", padx=0, pady=(0, 0)) 
         
-        # 进度条
-        self.progress = ctk.CTkProgressBar(self, height=4, corner_radius=0, progress_color=COLOR_ACCENT, fg_color="#444")
+        # --- 5. 进度条 (最底部) ---
+        self.progress = ctk.CTkProgressBar(self, height=6, corner_radius=3, progress_color=COLOR_ACCENT, fg_color="#444")
         self.progress.set(0)
-        self.progress.grid(row=2, column=0, columnspan=3, sticky="ew")
+        self.progress.grid(row=2, column=0, columnspan=3, sticky="new", padx=12, pady=(0, 10))
 
-    # 打开文件所在位置
+    # (以下方法不用变)
     def open_location(self):
-        try:
-            subprocess.run(['explorer', '/select,', os.path.normpath(self.filepath)])
+        try: subprocess.run(['explorer', '/select,', os.path.normpath(self.filepath)])
         except: pass
-
-    # 更新卡片序号
     def update_index(self, new_index):
         try:
-            if self.winfo_exists():
-                self.lbl_index.configure(text=f"{new_index:02d}")
+            if self.winfo_exists(): self.lbl_index.configure(text=f"{new_index:02d}")
         except: pass
-
-    # 更新状态文字
     def set_status(self, text, color="#888", code=None):
         try:
             if self.winfo_exists():
                 self.lbl_status.configure(text=text, text_color=color)
                 if code is not None: self.status_code = code
         except: pass
-    
-    # 更新进度条
     def set_progress(self, val, color=COLOR_ACCENT):
         try:
             if self.winfo_exists():
                 self.progress.set(val)
                 self.progress.configure(progress_color=color)
         except: pass
-        
-    # 清理内存：任务完成后释放
     def clean_memory(self):
-        # self.ram_data = None # 此行已废弃
         self.source_mode = "PENDING"
         self.ssd_cache_path = None
 
@@ -923,10 +915,24 @@ class UltraEncoderApp(DnDWindow):
             self.lbl_run_status.configure(text=txt) 
         except: pass
 
-    # 应用系统优先级
-    def apply_system_priority(self, level):
-        mapping = {"常规": PRIORITY_NORMAL, "优先": PRIORITY_ABOVE, "极速": PRIORITY_HIGH}
-        p_val = mapping.get(level, PRIORITY_ABOVE)
+    # 应用系统优先级 [修正：严格对应 Windows API]
+    def apply_system_priority(self, level_text):
+        p_val = PRIORITY_NORMAL # 默认值
+        
+        # 1. 常规 (Normal) -> 0x20
+        if "NORMAL" in level_text: 
+            p_val = PRIORITY_NORMAL
+            
+        # 2. 较高 (Above Normal) -> 0x8000
+        # 这是最推荐的档位，既快又不卡鼠标
+        elif "ABOVE" in level_text: 
+            p_val = PRIORITY_ABOVE
+            
+        # 3. 高 (High) -> 0x80
+        # 这是应用程序层面的最高级，再高就是 Realtime(0x100) 作死级了
+        elif "HIGH" in level_text: 
+            p_val = PRIORITY_HIGH
+            
         try:
             pid = os.getpid()
             handle = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, pid)
@@ -1054,139 +1060,184 @@ class UltraEncoderApp(DnDWindow):
             # 如果正在跑，点击就是停止
             self.stop()
 
-    # --- 界面布局逻辑 (把所有按钮放上去) ---
+    # =========================================================================
+    # === [UI V4.0 修正版] 恢复按钮尺寸 & 强制左对齐 ===
+    # =========================================================================
     def setup_ui(self):
-        self.grid_columnconfigure(0, weight=0, minsize=320) 
+        SIDEBAR_WIDTH = 400 
+        
+        self.grid_columnconfigure(0, weight=0, minsize=SIDEBAR_WIDTH)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        left = ctk.CTkFrame(self, fg_color=COLOR_PANEL_LEFT, corner_radius=0, width=320)
+        left = ctk.CTkFrame(self, fg_color=COLOR_PANEL_LEFT, corner_radius=0, width=SIDEBAR_WIDTH)
         left.grid(row=0, column=0, sticky="nsew")
         left.pack_propagate(False)
         
-        # 标题栏
+        # --- 统一参数 ---
+        UNIFIED_PAD_X = 20  # 左右统一留白 20px
+        ROW_SPACING = 6     # 行间距 (这是行与行之间的缝隙，不影响按钮大小)
+        LABEL_PAD = (0, 3)  # 标题与按钮之间的缝隙
+        
+        # 统一字体设置
+        FONT_TITLE_MINI = ("微软雅黑", 11, "bold") # 小标题字体
+        FONT_BTN_BIG    = ("微软雅黑", 11, "bold") # 大按钮字体
+
+        # --- 1. 顶部区域 ---
         l_head = ctk.CTkFrame(left, fg_color="transparent")
-        l_head.pack(fill="x", padx=20, pady=(25, 10))
+        l_head.pack(fill="x", padx=UNIFIED_PAD_X, pady=(20, 5))
         
         title_box = ctk.CTkFrame(l_head, fg_color="transparent")
         title_box.pack(fill="x")
-        ctk.CTkLabel(title_box, text="Cinético", font=("Segoe UI Black", 32), text_color="#FFF").pack(side="left")
+        ctk.CTkLabel(title_box, text="Cinético", font=("Segoe UI Black", 36), text_color="#FFF").pack(side="left")
         
-        # 帮助按钮
         btn_help = ctk.CTkButton(title_box, text="❓", width=30, height=30, corner_radius=15, 
                                  fg_color="#333", hover_color="#555", command=self.show_help)
         btn_help.pack(side="right")
         
-        # 缓存按钮
-        self.btn_cache = ctk.CTkButton(left, text="正在检测磁盘...", fg_color="#252525", hover_color="#333", 
+        self.btn_cache = ctk.CTkButton(left, text="Checking Disk... / 正在检测磁盘", fg_color="#252525", hover_color="#333", 
                                      text_color="#AAA", font=("Consolas", 10), height=28, corner_radius=14, 
                                      command=self.select_cache_folder) 
-        self.btn_cache.pack(fill="x", padx=20, pady=(5, 5))
+        self.btn_cache.pack(fill="x", padx=UNIFIED_PAD_X, pady=(5, 5))
         
-        # 工具栏 (+ 和 清空)
+        # --- 2. 工具栏 ---
         tools = ctk.CTkFrame(left, fg_color="transparent")
         tools.pack(fill="x", padx=15, pady=5)
-        ctk.CTkButton(tools, text="+ 导入视频", width=120, height=36, corner_radius=18, 
-                     fg_color="#333", hover_color="#444", command=self.add_file).pack(side="left", padx=5)
-        self.btn_clear = ctk.CTkButton(tools, text="清空", width=60, height=36, corner_radius=18, 
-                     fg_color="transparent", border_width=1, border_color="#444", hover_color="#331111", text_color="#CCC", command=self.clear_all)
+        
+        ctk.CTkButton(tools, text="IMPORT / 导入视频", width=200, height=38, corner_radius=19, 
+                     fg_color="#333", hover_color="#444", font=("微软雅黑", 12, "bold"),
+                     command=self.add_file).pack(side="left", padx=5)
+        
+        # [修改] width=90 -> 110 (防止中文显示不全), text 增加中文 "清空"
+        self.btn_clear = ctk.CTkButton(tools, text="CLEAR / 清空", width=210, height=38, corner_radius=19, 
+                     fg_color="transparent", border_width=1, border_color="#444", 
+                     hover_color="#331111", text_color="#CCC", font=("微软雅黑", 12),
+                     command=self.clear_all)
         self.btn_clear.pack(side="left", padx=5)
 
-        # --- 在 setup_ui 函数中，找到 l_btm 部分，替换整个 l_btm 的定义 ---
-        
-        # 底部控制区 (把 padding 改小，pady=10)
+        # --- 3. 底部参数控制区 ---
         l_btm = ctk.CTkFrame(left, fg_color="#222", corner_radius=20)
-        l_btm.pack(side="bottom", fill="x", padx=15, pady=20, ipadx=5, ipady=10)
-        
-        # --- 1. 优先级选择 ---
-        rowP = ctk.CTkFrame(l_btm, fg_color="transparent")
-        rowP.pack(fill="x", pady=(10, 5), padx=15) # pady 改小
-        ctk.CTkLabel(rowP, text="系统优先级", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
-        self.priority_var = ctk.StringVar(value="优先")
-        self.seg_priority = ctk.CTkSegmentedButton(rowP, values=["常规", "优先", "极速"], 
-                                                  variable=self.priority_var, command=lambda v: self.apply_system_priority(v),
-                                                  selected_color=COLOR_ACCENT, corner_radius=10)
-        self.seg_priority.pack(fill="x", pady=(5, 0))
+        l_btm.pack(side="bottom", fill="x", padx=UNIFIED_PAD_X, pady=10)
 
-        # --- 2. 并发数与功能开关 (分层布局，防止挤压) ---
-        row3 = ctk.CTkFrame(l_btm, fg_color="transparent")
-        row3.pack(fill="x", pady=(10, 5), padx=15)
-        ctk.CTkLabel(row3, text="并发任务数量", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
-        
-        # 上排：并发数选择
-        w_box_top = ctk.CTkFrame(row3, fg_color="transparent")
-        w_box_top.pack(fill="x", pady=(5, 2))
-        self.worker_var = ctk.StringVar(value="2")
-        self.seg_worker = ctk.CTkSegmentedButton(w_box_top, values=["1", "2", "3", "4"], variable=self.worker_var, 
-                                               corner_radius=10, command=self.update_monitor_layout)
-        self.seg_worker.pack(fill="x", expand=True)
-
-        # 下排：核心开关组 (去掉重复，横向排布)
-        w_box_btm = ctk.CTkFrame(row3, fg_color="transparent")
-        w_box_btm.pack(fill="x", pady=(5, 0))
-        
-        # GPU 开关 (仅保留一个)
+        # 变量初始化
         self.gpu_var = ctk.BooleanVar(value=True)
-        ctk.CTkSwitch(w_box_btm, text="GPU", width=60, variable=self.gpu_var, 
-                     progress_color=COLOR_ACCENT).pack(side="left")
-        
-        # 保留信息
         self.keep_meta_var = ctk.BooleanVar(value=True)
-        ctk.CTkSwitch(w_box_btm, text="保留信息", width=80, variable=self.keep_meta_var, 
-                     progress_color=COLOR_RAM, font=("微软雅黑", 11)).pack(side="left", padx=5)
+        self.hybrid_var = ctk.BooleanVar(value=True)
         
-        # 异构分流
-        self.hybrid_var = ctk.BooleanVar(value=False)
-        ctk.CTkSwitch(w_box_btm, text="异构分流", width=80, variable=self.hybrid_var, 
-                     progress_color=COLOR_SUCCESS, font=("微软雅黑", 11)).pack(side="left", padx=5)
-
-        # --- 3. 画质滑块 ---
-        row2 = ctk.CTkFrame(l_btm, fg_color="transparent")
-        row2.pack(fill="x", pady=(10, 5), padx=15) # 【修改】这里原来是 pady=15，改小了，这就紧凑了
-        ctk.CTkLabel(row2, text="CRF 画质控制", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
-        c_box = ctk.CTkFrame(row2, fg_color="transparent")
-        c_box.pack(fill="x")
+        # [修改] 修复默认值不显示的问题。
+        # 这里的字符串必须和下面 segment values 里的完全一致，差一个空格都不行
+        self.priority_var = ctk.StringVar(value="HIGH / 高优先") 
+        
+        self.worker_var = ctk.StringVar(value="2")
         self.crf_var = ctk.IntVar(value=23)
-        ctk.CTkSlider(c_box, from_=16, to=35, variable=self.crf_var, progress_color=COLOR_ACCENT).pack(side="left", fill="x", expand=True)
-        ctk.CTkLabel(c_box, textvariable=self.crf_var, width=25, font=("Arial", 12, "bold"), text_color=COLOR_ACCENT).pack(side="right")
-        
-        # --- 4. 编码格式选择 ---
-        row1 = ctk.CTkFrame(l_btm, fg_color="transparent")
-        row1.pack(fill="x", pady=(5, 15), padx=15) # 【修改】下方留白改成 15，和按钮稍微靠近点
-        ctk.CTkLabel(row1, text="编码格式", font=("微软雅黑", 12, "bold"), text_color="#DDD").pack(anchor="w")
         self.codec_var = ctk.StringVar(value="H.264")
-        self.seg_codec = ctk.CTkSegmentedButton(row1, values=["H.264", "H.265", "AV1"], variable=self.codec_var, selected_color=COLOR_ACCENT, corner_radius=10)
-        self.seg_codec.pack(fill="x", pady=(5, 0))
 
-        # --- 5. 启动按钮 ---
-        # 去掉了底部的 pady，让它尽量靠下
-        self.btn_action = ctk.CTkButton(l_btm, text="COMPRESS / 启动", height=50, corner_radius=12, 
-                                   font=("微软雅黑", 16, "bold"), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, 
+        # === 功能开关组 (Toggle Buttons) ===
+        def toggle_btn_cmd(var, btn):
+            current = var.get()
+            var.set(not current)
+            new_state = var.get()
+            btn.configure(fg_color=COLOR_ACCENT if new_state else "#333333", 
+                          text_color="#FFF" if new_state else "#888")
+
+        f_toggles = ctk.CTkFrame(l_btm, fg_color="transparent")
+        f_toggles.pack(fill="x", padx=UNIFIED_PAD_X, pady=(15, 5))
+        f_toggles.grid_columnconfigure(0, weight=1)
+        f_toggles.grid_columnconfigure(1, weight=1)
+        f_toggles.grid_columnconfigure(2, weight=1)
+        
+        # [尺寸恢复] 高度恢复到 48
+        self.btn_gpu = ctk.CTkButton(f_toggles, text="GPU ACCEL\n硬件加速", font=FONT_BTN_BIG,
+                                     corner_radius=8, height=48, fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER)
+        self.btn_gpu.configure(command=lambda: toggle_btn_cmd(self.gpu_var, self.btn_gpu))
+        self.btn_gpu.grid(row=0, column=0, padx=(0, 3), sticky="ew")
+
+        self.btn_meta = ctk.CTkButton(f_toggles, text="KEEP DATA\n保留信息", font=FONT_BTN_BIG,
+                                      corner_radius=8, height=48, fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER)
+        self.btn_meta.configure(command=lambda: toggle_btn_cmd(self.keep_meta_var, self.btn_meta))
+        self.btn_meta.grid(row=0, column=1, padx=3, sticky="ew")
+
+        self.btn_hybrid = ctk.CTkButton(f_toggles, text="HYBRID\n异构分流", font=FONT_BTN_BIG,
+                                        corner_radius=8, height=48, fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER)
+        self.btn_hybrid.configure(command=lambda: toggle_btn_cmd(self.hybrid_var, self.btn_hybrid))
+        self.btn_hybrid.grid(row=0, column=2, padx=(3, 0), sticky="ew")
+
+        # --- 系统优先级 ---
+        rowP = ctk.CTkFrame(l_btm, fg_color="transparent")
+        rowP.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
+        ctk.CTkLabel(rowP, text="PRIORITY / 系统优先级", font=FONT_TITLE_MINI, text_color="#DDD").pack(anchor="w", pady=LABEL_PAD)
+        
+        self.seg_priority = ctk.CTkSegmentedButton(rowP, values=["NORMAL / 常规", "ABOVE / 较高", "HIGH / 高优先"], 
+                                                  variable=self.priority_var, 
+                                                  command=lambda v: self.apply_system_priority(v),
+                                                  selected_color=COLOR_ACCENT, # 确保颜色一致
+                                                  corner_radius=8, height=30)
+        self.seg_priority.pack(fill="x")
+
+        # --- 并发任务 ---
+        row3 = ctk.CTkFrame(l_btm, fg_color="transparent")
+        row3.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
+        ctk.CTkLabel(row3, text="CONCURRENCY / 并发任务", font=FONT_TITLE_MINI, text_color="#DDD").pack(anchor="w", pady=LABEL_PAD)
+        
+        # [修改] 增加了 selected_color=COLOR_ACCENT，让选中时的蓝色跟其他按钮统一
+        self.seg_worker = ctk.CTkSegmentedButton(row3, values=["1", "2", "3", "4"], variable=self.worker_var, 
+                                               corner_radius=8, height=30,
+                                               selected_color=COLOR_ACCENT, 
+                                               selected_hover_color=COLOR_ACCENT_HOVER,
+                                               command=self.update_monitor_layout)
+        self.seg_worker.pack(fill="x")
+
+        # --- 画质滑块 (核心修复：左对齐) ---
+        row2 = ctk.CTkFrame(l_btm, fg_color="transparent")
+        row2.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
+        ctk.CTkLabel(row2, text="QUALITY (CRF) / 画质控制", font=FONT_TITLE_MINI, text_color="#DDD").pack(anchor="w", pady=LABEL_PAD)
+        
+        c_box = ctk.CTkFrame(row2, fg_color="transparent")
+        c_box.pack(fill="x") # 默认 fill=x
+        
+        # [修正] Slider 默认左右有内边距，我们手动设置 border_width=0 且 padx=0
+        # 高度恢复到 20，稍微大一点方便拖动
+        slider = ctk.CTkSlider(c_box, from_=16, to=35, variable=self.crf_var, progress_color=COLOR_ACCENT, height=20)
+        # 这里用 pack 且 fill="x" 让它撑满，但可以通过 padx=(0, 10) 来微调右侧留空给数字
+        slider.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        
+        ctk.CTkLabel(c_box, textvariable=self.crf_var, width=35, font=("Arial", 12, "bold"), text_color=COLOR_ACCENT).pack(side="right")
+        
+        # --- 编码格式 ---
+        row1 = ctk.CTkFrame(l_btm, fg_color="transparent")
+        row1.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
+        ctk.CTkLabel(row1, text="CODEC / 编码格式", font=FONT_TITLE_MINI, text_color="#DDD").pack(anchor="w", pady=LABEL_PAD)
+        # 高度恢复到 30
+        self.seg_codec = ctk.CTkSegmentedButton(row1, values=["H.264", "H.265", "AV1"], 
+                                                variable=self.codec_var, selected_color=COLOR_ACCENT, corner_radius=8, height=30)
+        self.seg_codec.pack(fill="x")
+
+        # --- 启动按钮 ---
+        # [修改] text改为 "COMPRESS / 压制"
+        self.btn_action = ctk.CTkButton(l_btm, text="COMPRESS / 压制", height=55, corner_radius=12, 
+                                   font=("微软雅黑", 18, "bold"), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, 
                                    text_color="#000", command=self.toggle_action)
-        self.btn_action.pack(fill="x", padx=15, pady=(0, 5)) # 底部留一点点缝隙即可
+        self.btn_action.pack(fill="x", padx=UNIFIED_PAD_X, pady=20)
 
-        # 任务列表滚动区
+        # --- 列表区 ---
         self.scroll = ctk.CTkScrollableFrame(left, fg_color="transparent")
-        self.scroll.pack(fill="both", expand=True, padx=10, pady=10)
+        self.scroll.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # 右侧面板配置
+        # --- 右侧面板 ---
         right = ctk.CTkFrame(self, fg_color=COLOR_PANEL_RIGHT, corner_radius=0)
         right.grid(row=0, column=1, sticky="nsew")
         r_head = ctk.CTkFrame(right, fg_color="transparent")
         r_head.pack(fill="x", padx=30, pady=(25, 10))
-        # [UI修复] 调亮文字颜色，使其可见
+        
         ctk.CTkLabel(r_head, text="LIVE MONITOR", font=("Microsoft YaHei UI", 20, "bold"), text_color="#BBB").pack(side="left")
         
-        # 【新增】这里加一个 Label，专门用来显示任务队列状态
         self.lbl_run_status = ctk.CTkLabel(r_head, text="", font=("微软雅黑", 12, "bold"), text_color=COLOR_ACCENT)
-        self.lbl_run_status.pack(side="left", padx=20, pady=2) # 放在标题右边
+        self.lbl_run_status.pack(side="left", padx=20, pady=2) 
 
         self.lbl_gpu = ctk.CTkLabel(r_head, text="GPU: --W | --°C", font=("Consolas", 14, "bold"), text_color="#444")
         self.lbl_gpu.pack(side="right")
         
-        # [UI修复] 改用 ScrollableFrame，防止任务多了显示不下
         self.monitor_frame = ctk.CTkScrollableFrame(right, fg_color="transparent")
-        # 修改 padding：底部留空稍微改小一点，给滚动条留位置
         self.monitor_frame.pack(fill="both", expand=True, padx=25, pady=(0, 15))
 
     # 清空列表
@@ -1386,14 +1437,13 @@ class UltraEncoderApp(DnDWindow):
 
     # 重置界面状态（任务结束或停止后）
     def reset_ui_state(self):
-        # --- 【修改】还原按钮为“启动模式” ---
+        # --- 【修改】还原按钮文字为 "压制" ---
         self.btn_action.configure(
-            text="COMPRESS / 启动", 
+            text="COMPRESS / 压制",  # 这里记得改成新的文案
             fg_color=COLOR_ACCENT, 
             hover_color=COLOR_ACCENT_HOVER,
             state="normal"
         )
-        # 【新增】任务结束时，清空右上角的状态文字
         self.lbl_run_status.configure(text="") 
         self.btn_clear.configure(state="normal")
         self.update_monitor_layout(force_reset=True)
