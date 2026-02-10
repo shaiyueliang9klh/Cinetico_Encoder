@@ -65,6 +65,7 @@ from http import HTTPStatus
 from functools import partial # 函数工具，用来固定参数
 from collections import deque
 import uuid        # 用来生成唯一的Token，确保内存服务器的安全性
+import random      # 用来生成随机数，辅助测试和模拟数据
 
 # =========================================================================
 # === 全局视觉配置 (决定软件长什么样) ===
@@ -863,8 +864,36 @@ class UltraEncoderApp(DnDWindow):
 
     # 拖拽文件进来时触发
     def drop_file(self, event):
+        # [修改] 先检查一下是不是要自动清场
+        self.auto_clear_completed()
+        
         files = self.tk.splitlist(event.data)
         self.add_list(files)
+
+    # [新增] 智能清理：如果当前队列的任务全部完成了，就自动清空，为新任务腾地儿
+    # [修正版] 智能清理：不再依赖不可靠的计数器，直接检查任务状态
+    def auto_clear_completed(self):
+        # 1. 如果正在跑，绝对不能清空 (可能用户只是想中途加一个文件)
+        if self.running: return
+
+        # 2. 如果队列是空的，没必要清空
+        if not self.file_queue: return
+
+        # 3. [核心修复] 遍历检查所有任务的实际状态
+        # 只要列表里有一个任务既不是“完成”也不是“报错”，那就说明还没跑完
+        all_finished = True
+        for f in self.file_queue:
+            # STATE_DONE = 5 (完成), STATE_ERROR = -1 (报错)
+            code = self.task_widgets[f].status_code
+            if code != 5 and code != -1: # 硬编码判断，防止常量未定义
+                all_finished = False
+                break
+        
+        # 4. 如果确实全部结束了，执行清场
+        if all_finished:
+            print("Detected all tasks finished. Auto clearing...")
+            # 调用 clear_all，它内部会调用 reset_ui_state 把按钮变回“压制”并解锁
+            self.clear_all()
 
     # 添加文件到列表的逻辑
     def add_list(self, files):
@@ -1109,7 +1138,8 @@ class UltraEncoderApp(DnDWindow):
                      command=self.add_file).pack(side="left", padx=5)
         
         # [修改] width=90 -> 110 (防止中文显示不全), text 增加中文 "清空"
-        self.btn_clear = ctk.CTkButton(tools, text="CLEAR / 清空", width=210, height=38, corner_radius=19, 
+        # [修改] width=210, text 改为 "RESET / 重置", command 保持不变(逻辑在 clear_all 里改)
+        self.btn_clear = ctk.CTkButton(tools, text="RESET / 重置", width=210, height=38, corner_radius=19, 
                      fg_color="transparent", border_width=1, border_color="#444", 
                      hover_color="#331111", text_color="#CCC", font=("微软雅黑", 12),
                      command=self.clear_all)
@@ -1241,13 +1271,30 @@ class UltraEncoderApp(DnDWindow):
         self.monitor_frame.pack(fill="both", expand=True, padx=25, pady=(0, 15))
 
     # 清空列表
+    # [修改] 重置功能：清空列表 + 还原按钮状态 + 滚动条归位
     def clear_all(self):
-        if self.running: return
+        if self.running: return # 运行中禁止重置
+        
+        # 1. 清空 UI 列表
         for k, v in self.task_widgets.items(): v.destroy()
         self.task_widgets.clear()
         self.file_queue.clear()
         self.finished_tasks_count = 0
-        self.btn_action.configure(text="COMPRESS / 启动")
+        
+        # 2. [新增] 强制滚动条回到最顶部 (0.0)
+        # 必须访问 _parent_canvas 才能控制滚动位置
+        try:
+            self.scroll._parent_canvas.yview_moveto(0.0)
+        except: pass
+
+        # 3. 强制把大按钮还原回“压制”状态
+        self.reset_ui_state()
+        
+        # 4. 清空顶部状态栏文字
+        self.lbl_run_status.configure(text="")
+        
+        # 5. 重置监控窗口
+        self.update_monitor_layout(force_reset=True)
 
     # 更新右侧监控窗口的布局（根据并发数增减）
     def update_monitor_layout(self, val=None, force_reset=False):
@@ -1459,7 +1506,158 @@ class UltraEncoderApp(DnDWindow):
     # 添加文件对话框
     def add_file(self):
         files = filedialog.askopenfilenames(title="选择视频文件", filetypes=[("Video Files", "*.mp4 *.mkv *.mov *.avi *.ts *.flv *.wmv")])
-        if files: self.add_list(files)
+        if files: 
+            # [修改] 只有当用户真的选了文件点确定了，我们才清空旧的
+            self.auto_clear_completed()
+            self.add_list(files)
+
+    # [新增] 自定义的高颜值深色弹窗
+    def show_custom_popup(self, title, message):
+        if not self.winfo_exists(): return
+        
+        # 创建顶层窗口
+        top = ctk.CTkToplevel(self)
+        top.geometry("320x160")
+        top.title("")
+        top.overrideredirect(True) # 去掉丑陋的 Windows 标题栏
+        top.attributes("-topmost", True) # 强制置顶
+        
+        # 居中计算
+        try:
+            x = self.winfo_x() + (self.winfo_width() // 2) - 160
+            y = self.winfo_y() + (self.winfo_height() // 2) - 80
+            top.geometry(f"+{x}+{y}")
+        except: pass
+
+        # 边框和背景容器
+        bg = ctk.CTkFrame(top, fg_color="#2B2B2B", border_width=2, border_color=COLOR_ACCENT, corner_radius=15)
+        bg.pack(fill="both", expand=True)
+        
+        # 标题
+        ctk.CTkLabel(bg, text=title, font=("微软雅黑", 18, "bold"), text_color=COLOR_ACCENT).pack(pady=(25, 5))
+        
+        # 内容
+        ctk.CTkLabel(bg, text=message, font=("微软雅黑", 13), text_color="#DDD").pack(pady=(0, 20))
+        
+        # 确认按钮
+        def close_win():
+            top.destroy()
+            
+        ctk.CTkButton(bg, text="OK / 知道了", width=100, height=32, corner_radius=16,
+                      fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, 
+                      command=close_win).pack(pady=10)
+        
+        # 强制模态（锁住主窗口不让点）
+        top.grab_set()
+
+    # ======================================================
+    # === [最终融合版] 暴力参数 + 丝滑拖尾渲染 ===
+    # ======================================================
+    def launch_fireworks(self):
+        if not self.winfo_exists(): return
+
+        # 1. 创建全屏透明覆盖层
+        top = ctk.CTkToplevel(self)
+        top.title("")
+        w, h = self.winfo_width(), self.winfo_height()
+        x, y = self.winfo_x(), self.winfo_y()
+        top.geometry(f"{w}x{h}+{x}+{y}")
+        
+        top.overrideredirect(True)
+        top.attributes("-topmost", True)
+        top.attributes("-transparentcolor", "black") 
+        
+        canvas = ctk.CTkCanvas(top, bg="black", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+
+        # 2. 粒子物理系统
+        particles = []
+        colors = [COLOR_ACCENT, "#F1C40F", "#E74C3C", "#2ECC71", "#9B59B6", "#00FFFF", "#FF00FF", "#FFFFFF"] 
+        
+        particle_count = 150 # 稍微增加一点数量，因为爆发很快
+        
+        # === [左侧发射器] (使用你提供的参数) ===
+        for _ in range(particle_count):
+            particles.append({
+                # [发射点]: 宽 150px 的区域
+                "x": random.uniform(-50, 100), 
+                "y": h + random.uniform(0, 30),
+                
+                # [速度]: 使用高斯分布，形成扇形
+                "vx": random.gauss(15, 10),   
+                "vy": random.gauss(-40, 12), # 强劲向上
+                
+                "grav": 2.0,                  # 强重力 (下落快)
+                "size": random.uniform(3, 8), # 对应线条粗细
+                "color": random.choice(colors),
+                "life": 1.0,
+                "decay": random.uniform(0.012, 0.025) 
+            })
+            
+        # === [右侧发射器] (使用你提供的参数) ===
+        for _ in range(particle_count):
+            particles.append({
+                # [发射点]: 右下角区域
+                "x": random.uniform(w-100, w+50), 
+                "y": h + random.uniform(0, 30),
+                
+                # [速度]: 向左飞
+                "vx": random.gauss(-15, 10),
+                "vy": random.gauss(-40, 12),
+                
+                "grav": 1.6, # 稍微轻一点 (保留你的不对称设计)
+                "size": random.uniform(3, 8),
+                "color": random.choice(colors),
+                "life": 1.0,
+                "decay": random.uniform(0.012, 0.025)
+            })
+
+        # 3. 动画循环 (使用 Create Line 实现拖尾)
+        def animate():
+            if not top.winfo_exists(): return
+            canvas.delete("all")
+            
+            alive_count = 0
+            
+            for p in particles:
+                if p["life"] > 0:
+                    alive_count += 1
+                    
+                    # === 物理计算 ===
+                    # 1. 记录上一帧位置 (作为拖尾起点)
+                    tail_x, tail_y = p["x"], p["y"]
+                    
+                    # 2. 更新位置
+                    p["x"] += p["vx"]
+                    p["y"] += p["vy"]
+                    
+                    # 3. 应用你的物理参数
+                    p["vy"] += p["grav"] # 重力
+                    p["vx"] *= 0.97      # 空气阻力 (保留你的 0.97，阻力较小，飞得远)
+                    p["life"] -= p["decay"]
+                    
+                    # === 绘制逻辑: 动态拖尾 ===
+                    # 只有当粒子还没死透时才画
+                    if p["life"] > 0.05:
+                        # 使用 create_line 代替 create_oval
+                        # 从 [上一帧位置] 画到 [当前位置]，自然形成速度拖尾
+                        canvas.create_line(
+                            tail_x, tail_y, 
+                            p["x"], p["y"], 
+                            fill=p["color"], 
+                            # 宽度随生命值衰减
+                            width=p["size"] * p["life"], 
+                            # 圆头线帽，保证美观
+                            capstyle="round" 
+                        )
+            
+            if alive_count > 0:
+                # 15ms 约等于 66 FPS
+                top.after(15, animate)
+            else:
+                top.destroy()
+
+        animate()
 
     # --- 调度引擎 (Engine) ---
     # --- [重构] 总指挥 (Grand Commander) ---
@@ -1498,43 +1696,56 @@ class UltraEncoderApp(DnDWindow):
                         active_compute_count += 1
 
             # --- B. 调度 IO (后勤) ---
-            # 只有当 IO 槽位有空，且还有任务在排队时
-            if active_io_count < io_concurrency:
-                with self.queue_lock:
-                    for f in self.file_queue:
-                        card = self.task_widgets[f]
+            # [修改版] 策略：SSD直读跳过IO队列，HDD强制单线程排队
+            with self.queue_lock:
+                for f in self.file_queue:
+                    card = self.task_widgets[f]
+                    
+                    # 找到一个待命的任务
+                    if card.status_code == STATE_PENDING:
+                        # 1. 检测【源文件】所在的硬盘类型
+                        source_is_ssd = is_drive_ssd(f)
                         
-                        # 找到一个待命的任务
-                        if card.status_code == STATE_PENDING:
-                            # [智能 RAM 判断]
-                            # 预测：如果我们加载它，内存会爆吗？
+                        # === 策略分支 A: 源文件是 SSD ===
+                        if source_is_ssd:
+                            # 用户要求：SSD 直接读取，不用进 RAM，也不用缓存
+                            card.source_mode = "DIRECT"
+                            card.status_code = STATE_READY # 直接标记为就绪
+                            
+                            # 更新 UI
+                            self.safe_update(card.set_status, "就绪 (SSD直读)", COLOR_DIRECT, STATE_READY)
+                            self.safe_update(card.set_progress, 1.0, COLOR_DIRECT)
+                            
+                            # 不需要提交给 io_executor，直接看下一个任务
+                            continue 
+
+                        # === 策略分支 B: 源文件是 HDD (机械硬盘) ===
+                        else:
+                            # 用户要求：HDD 必须依次读取 (强制串行)
+                            # 如果当前已经有任何一个 IO 任务在跑 (active_io_count > 0)，就立刻停止调度，等待它完成
+                            if active_io_count >= 1:
+                                break 
+                            
+                            # 如果没有 IO 任务，则开始处理这个 HDD 任务 (进 RAM 或 SSD缓存)
+                            # [智能 RAM 判断逻辑保持不变]
                             predicted_usage = current_ram_usage + card.file_size_gb
                             
-                            # 决策：是否进 RAM
-                            should_use_ram = False
                             if predicted_usage < total_ram_limit:
                                 should_use_ram = True
-                                # 预占位：虽然还没加载完，但我们在账本上先把它记下来，防止下一个任务超发
                                 current_ram_usage += card.file_size_gb 
                             else:
-                                should_use_ram = False # 内存不够，走 SSD 缓存
+                                should_use_ram = False 
                             
                             # 下达指令
-                            if should_use_ram:
-                                card.source_mode = "RAM"
-                            else:
-                                card.source_mode = "SSD_CACHE" # 强制 SSD 模式
-                            
-                            # 更改状态，防止重复提交
+                            card.source_mode = "RAM" if should_use_ram else "SSD_CACHE"
                             card.status_code = STATE_QUEUED_IO
                             active_io_count += 1
                             
                             # 派出后勤兵
                             self.io_executor.submit(self._worker_io_task, f)
                             
-                            # 如果 IO 槽位满了，停止本轮 IO 调度
-                            if active_io_count >= io_concurrency:
-                                break
+                            # HDD 只能跑一个，提交完这一个立刻退出循环
+                            break
 
             # --- C. 调度计算 (前线) ---
             # 只有当计算槽位有空
@@ -1551,6 +1762,8 @@ class UltraEncoderApp(DnDWindow):
                             
                             # 派出突击手
                             self.executor.submit(self._worker_compute_task, f)
+
+                            self.safe_update(self.scroll_to_card, card)
                             
                             if active_compute_count >= self.current_workers:
                                 break
@@ -1568,8 +1781,37 @@ class UltraEncoderApp(DnDWindow):
 
         # 循环结束，善后
         self.running = False
-        self.safe_update(messagebox.showinfo, "完成", "所有任务处理完毕")
-        self.safe_update(self.reset_ui_state)
+        
+        # [逻辑修改] 任务自然完成（非手动停止）
+        if not self.stop_flag:
+            # 1. 发射礼花！🎆 (保留你的得意之作)
+            self.safe_update(self.launch_fireworks)
+            
+            # 2. [新功能] 不弹窗，直接把大按钮变绿，提示完成
+            def set_complete_state():
+                # A. 大按钮变成“已完成”且禁止点击
+                self.btn_action.configure(
+                    text="COMPLETED / 已完成",
+                    fg_color=COLOR_SUCCESS,    
+                    hover_color="#27AE60",     
+                    state="disabled"           
+                )
+                self.lbl_run_status.configure(text="✨ All Tasks Finished")
+
+                # ==================================================
+                # === [关键修复] 必须把重置按钮解锁，否则用户无法重置！===
+                # ==================================================
+                self.btn_clear.configure(state="normal") 
+                
+            self.safe_update(set_complete_state)
+            
+        else:
+            # 如果是手动停止的，恢复原状
+            self.safe_update(self.reset_ui_state)
+            
+        # 注意：这里去掉了原来的 self.safe_update(self.reset_ui_state)，
+        # 因为如果是自然完成，我们要保持“绿色完成态”让用户看到，不能马上重置。
+        # 只有在 stop_flag == True (手动停止) 时才立即重置。
 
     # --- [新增] 后勤兵：只负责 IO (读硬盘/写内存) ---
     def _worker_io_task(self, task_file):
