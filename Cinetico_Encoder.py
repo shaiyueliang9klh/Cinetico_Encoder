@@ -706,7 +706,7 @@ class HelpWindow(ctk.CTkToplevel):
         )
         
         self.add_item_block(
-            "10-BIT", "High Color / 高色彩",
+            "10-BIT", "High Color Depth / 高色深",
             "1.07 billion colors. Eliminates color banding and improves compression efficiency for gradients. \nRecommendation: Always Enable for Archiving.",
             "10.7 亿色。彻底消除色彩断层，提升渐变色区域压缩效率。\n建议：存档或追求高画质时务必开启。"
         )
@@ -1212,9 +1212,10 @@ class UltraEncoderApp(DnDWindow):
             self.stop()
 
     # =========================================================================
-    # === [UI V4.0 修正版] 恢复按钮尺寸 & 强制左对齐 ===
+    # === [UI V5.0 终极逻辑版] 互斥锁 + 视觉统一 + 420px ===
     # =========================================================================
     def setup_ui(self):
+        # [修改] 用户指定的完美宽度
         SIDEBAR_WIDTH = 420 
         
         self.grid_columnconfigure(0, weight=0, minsize=SIDEBAR_WIDTH)
@@ -1226,14 +1227,17 @@ class UltraEncoderApp(DnDWindow):
         left.pack_propagate(False)
         
         # --- 统一参数 ---
-        UNIFIED_PAD_X = 20  # 左右统一留白 20px
-        ROW_SPACING = 6     # 行间距 (这是行与行之间的缝隙，不影响按钮大小)
-        LABEL_PAD = (0, 3)  # 标题与按钮之间的缝隙
+        UNIFIED_PAD_X = 20  
+        ROW_SPACING = 6     
+        LABEL_PAD = (0, 3)
         
-        # 统一字体设置
-        FONT_TITLE_MINI = ("微软雅黑", 11, "bold") # 小标题字体
-        FONT_BTN_BIG    = ("微软雅黑", 11, "bold") # 大按钮字体
-
+        # [修改] 统一字体与颜色常量
+        FONT_TITLE_MINI = ("微软雅黑", 11, "bold") 
+        FONT_BTN_BIG    = ("微软雅黑", 11, "bold")
+        COL_TEXT_ACTIVE = "#FFFFFF"   # 激活状态：纯白
+        COL_TEXT_INACTIVE = "#999999" # 未激活：统一浅灰
+        COL_BTN_BG_OFF = "#333333"    # 按钮背景：关闭
+        
         # --- 1. 顶部区域 ---
         l_head = ctk.CTkFrame(left, fg_color="transparent")
         l_head.pack(fill="x", padx=UNIFIED_PAD_X, pady=(20, 5))
@@ -1255,13 +1259,11 @@ class UltraEncoderApp(DnDWindow):
         tools = ctk.CTkFrame(left, fg_color="transparent")
         tools.pack(fill="x", padx=15, pady=5)
         
-        ctk.CTkButton(tools, text="IMPORT / 导入视频", width=200, height=38, corner_radius=19, 
-                     fg_color="#333", hover_color="#444", font=("微软雅黑", 12, "bold"),
+        ctk.CTkButton(tools, text="IMPORT / 导入视频", width=190, height=38, corner_radius=19, 
+                     fg_color="#333", hover_color="#444", text_color="#DDD", font=("微软雅黑", 12, "bold"),
                      command=self.add_file).pack(side="left", padx=5)
         
-        # [修改] width=90 -> 110 (防止中文显示不全), text 增加中文 "清空"
-        # [修改] width=210, text 改为 "RESET / 重置", command 保持不变(逻辑在 clear_all 里改)
-        self.btn_clear = ctk.CTkButton(tools, text="RESET / 重置", width=210, height=38, corner_radius=19, 
+        self.btn_clear = ctk.CTkButton(tools, text="RESET / 重置", width=190, height=38, corner_radius=19, 
                      fg_color="transparent", border_width=1, border_color="#444", 
                      hover_color="#331111", text_color="#CCC", font=("微软雅黑", 12),
                      command=self.clear_all)
@@ -1272,181 +1274,206 @@ class UltraEncoderApp(DnDWindow):
         l_btm.pack(side="bottom", fill="x", padx=UNIFIED_PAD_X, pady=10)
 
         # 变量初始化
-        # [修改] GPU 默认关闭 (追求极致画质/体积)
         self.gpu_var = ctk.BooleanVar(value=False) 
         self.keep_meta_var = ctk.BooleanVar(value=True)
-        self.hybrid_var = ctk.BooleanVar(value=False) # 分流默认也关掉
-        self.depth_10bit_var = ctk.BooleanVar(value=False) # [新增] 默认关闭 (8bit)
+        self.hybrid_var = ctk.BooleanVar(value=False) 
+        self.depth_10bit_var = ctk.BooleanVar(value=False)
         
-        # 优先级与并发
         self.priority_var = ctk.StringVar(value="HIGH / 高优先") 
         self.worker_var = ctk.StringVar(value="2")
-        
-        # [修改] 因为默认是 CPU 模式，所以 CRF 默认回滚到 23
         self.crf_var = ctk.IntVar(value=23)
         self.codec_var = ctk.StringVar(value="H.264")
 
-        # === 功能开关组 (Toggle Buttons) ===
-        # [逻辑修正] GPU 联动控制函数 (包含对 HYBRID 的互斥锁)
-        # [逻辑修正] GPU 联动控制函数 (包含数值自动换算)
-        def toggle_gpu_cmd():
-            # 1. 切换 GPU 自身状态
-            current_gpu = self.gpu_var.get()
-            new_gpu_state = not current_gpu
-            self.gpu_var.set(new_gpu_state)
-            
-            # 2. 更新 GPU 按钮外观
-            self.btn_gpu.configure(fg_color=COLOR_ACCENT if new_gpu_state else "#333333", 
-                                   text_color="#FFF" if new_gpu_state else "#888")
-            
-            # 3. 联动控制 HYBRID 按钮 (互斥逻辑)
-            if new_gpu_state:
-                # 开启 GPU -> 解锁 HYBRID
-                self.btn_hybrid.configure(state="normal", fg_color="#333333", text_color="#888")
-            else:
-                # 关闭 GPU -> 锁定并关闭 HYBRID
-                self.hybrid_var.set(False)
+        # ======================================================
+        # === [核心逻辑] 状态互斥与视觉刷新函数 ===
+        # ======================================================
+        def update_btn_visuals():
+            # 统一刷新所有按钮的颜色，确保绝对一致
+            # 1. GPU
+            is_gpu = self.gpu_var.get()
+            self.btn_gpu.configure(
+                fg_color=COLOR_ACCENT if is_gpu else COL_BTN_BG_OFF,
+                text_color=COL_TEXT_ACTIVE if is_gpu else COL_TEXT_INACTIVE
+            )
+            # 2. Meta
+            is_meta = self.keep_meta_var.get()
+            self.btn_meta.configure(
+                fg_color=COLOR_ACCENT if is_meta else COL_BTN_BG_OFF,
+                text_color=COL_TEXT_ACTIVE if is_meta else COL_TEXT_INACTIVE
+            )
+            # 3. Hybrid (特殊：如果 GPU 没开，它是 Disabled 状态)
+            is_hybrid = self.hybrid_var.get()
+            if not is_gpu:
                 self.btn_hybrid.configure(state="disabled", fg_color="#222222", text_color="#555")
-            
-            # 4. [核心升级] 动态画质换算 (CRF <=> CQ)
-            # 经验公式：NVENC CQ 通常需要比 x264 CRF 高 5 个点，才能获得相似的体积/画质平衡
-            OFFSET = 5 
-            current_val = self.crf_var.get()
-            
-            if new_gpu_state:
-                # === 切到 GPU 模式 (数值变大) ===
-                self.lbl_quality_title.configure(text="QUALITY (CQ) / 固定量化")
-                
-                # 自动计算新值：当前值 + 5
-                new_val = current_val + OFFSET
-                
-                # 边界检查：不要超过滑块最大值 40
-                if new_val > 40: new_val = 40
-                
-                self.crf_var.set(new_val)
-                
             else:
-                # === 切回 CPU 模式 (数值变小) ===
-                self.lbl_quality_title.configure(text="QUALITY (CRF) / 恒定速率")
-                
-                # 自动计算新值：当前值 - 5
-                new_val = current_val - OFFSET
-                
-                # 边界检查：不要低于滑块最小值 16
-                if new_val < 16: new_val = 16
-                
-                self.crf_var.set(new_val)
+                self.btn_hybrid.configure(
+                    state="normal",
+                    fg_color=COLOR_ACCENT if is_hybrid else COL_BTN_BG_OFF,
+                    text_color=COL_TEXT_ACTIVE if is_hybrid else COL_TEXT_INACTIVE
+                )
+            # 4. 10-BIT
+            is_10bit = self.depth_10bit_var.get()
+            self.btn_10bit.configure(
+                fg_color=COLOR_ACCENT if is_10bit else COL_BTN_BG_OFF,
+                text_color=COL_TEXT_ACTIVE if is_10bit else COL_TEXT_INACTIVE
+            )
 
-        # 辅助函数：通用开关
-        def toggle_common_cmd(var, btn):
+        # --- A. 点击 GPU 时的逻辑 ---
+        def on_toggle_gpu():
+            current = self.gpu_var.get()
+            target = not current
+            
+            # 互斥检查：如果开启 GPU，且当前是 H.264 + 10-bit -> 必须关掉 10-bit
+            if target and "H.264" in self.codec_var.get() and self.depth_10bit_var.get():
+                self.depth_10bit_var.set(False) # 牺牲 10-bit
+            
+            self.gpu_var.set(target)
+            if not target: self.hybrid_var.set(False) # 关 GPU 必关 Hybrid
+            
+            # 自动调整 CRF/CQ 数值
+            if target: self.crf_var.set(min(40, self.crf_var.get() + 5))
+            else: self.crf_var.set(max(16, self.crf_var.get() - 5))
+            
+            update_btn_visuals()
+            update_labels()
+
+        # --- B. 点击 10-BIT 时的逻辑 ---
+        def on_toggle_10bit():
+            current = self.depth_10bit_var.get()
+            target = not current
+            
+            # 互斥检查：如果开启 10-bit，且当前是 H.264 -> 必须关掉 GPU
+            if target and "H.264" in self.codec_var.get():
+                if self.gpu_var.get():
+                    self.gpu_var.set(False)
+                    self.hybrid_var.set(False) 
+                    
+                    # [新增修复] 强制关掉 GPU 时，必须把数值减回去 (-5)
+                    # 否则下次再开 GPU 又加 5，数值就会无限膨胀
+                    self.crf_var.set(max(16, self.crf_var.get() - 5))
+            
+            self.depth_10bit_var.set(target)
+            update_btn_visuals()
+            update_labels()
+
+        # --- C. 切换编码格式时的逻辑 ---
+        def on_codec_change(value):
+            # 如果切回 H.264，且 GPU 和 10-bit 同时开着 -> 优先保留 10-bit，关掉 GPU
+            if "H.264" in value:
+                if self.gpu_var.get() and self.depth_10bit_var.get():
+                    self.gpu_var.set(False)
+                    self.hybrid_var.set(False)
+                    
+                    # [新增修复] 这里同样需要把数值减回去
+                    self.crf_var.set(max(16, self.crf_var.get() - 5))
+                    
+            update_btn_visuals()
+            update_labels() # [记得加上这句] 确保标题文字(CQ/CRF)也能及时刷新
+
+        def on_toggle_simple(var):
             var.set(not var.get())
-            btn.configure(fg_color=COLOR_ACCENT if var.get() else "#333", text_color="#FFF" if var.get() else "#888")
+            update_btn_visuals()
 
+        def update_labels():
+            if self.gpu_var.get():
+                self.lbl_quality_title.configure(text="QUALITY (CQ) / 固定量化")
+            else:
+                self.lbl_quality_title.configure(text="QUALITY (CRF) / 恒定速率")
+
+        # === 布局按钮 ===
         f_toggles = ctk.CTkFrame(l_btm, fg_color="transparent")
         f_toggles.pack(fill="x", padx=UNIFIED_PAD_X, pady=(15, 5))
-        # [修改] 配置 4 列权重
-        f_toggles.grid_columnconfigure(0, weight=1)
-        f_toggles.grid_columnconfigure(1, weight=1)
-        f_toggles.grid_columnconfigure(2, weight=1)
-        f_toggles.grid_columnconfigure(3, weight=1) # [新增] 第4列
+        for i in range(4): f_toggles.grid_columnconfigure(i, weight=1)
         
-        # [修改] 按钮创建与初始化逻辑
-        
-        # 1. GPU 按钮
+        # 1. GPU
         self.btn_gpu = ctk.CTkButton(f_toggles, text="GPU ACCEL\n硬件加速", font=FONT_BTN_BIG,
-                                     corner_radius=8, height=48, 
-                                     fg_color="#333333", text_color="#888", hover_color=COLOR_ACCENT_HOVER)
-        self.btn_gpu.configure(command=toggle_gpu_cmd)
+                                     corner_radius=8, height=48, hover_color=COLOR_ACCENT_HOVER,
+                                     command=on_toggle_gpu)
         self.btn_gpu.grid(row=0, column=0, padx=(0, 3), sticky="ew")
 
-        # 2. Meta 按钮
+        # 2. Meta
         self.btn_meta = ctk.CTkButton(f_toggles, text="KEEP DATA\n保留信息", font=FONT_BTN_BIG,
-                                      corner_radius=8, height=48, fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER)
-        self.btn_meta.configure(command=lambda: toggle_common_cmd(self.keep_meta_var, self.btn_meta))
+                                      corner_radius=8, height=48, hover_color=COLOR_ACCENT_HOVER,
+                                      command=lambda: on_toggle_simple(self.keep_meta_var))
         self.btn_meta.grid(row=0, column=1, padx=3, sticky="ew")
 
-        # 3. Hybrid 按钮
+        # 3. Hybrid
         self.btn_hybrid = ctk.CTkButton(f_toggles, text="HYBRID\n异构分流", font=FONT_BTN_BIG,
-                                        corner_radius=8, height=48, 
-                                        fg_color="#222222", text_color="#555", 
-                                        state="disabled", hover_color=COLOR_ACCENT_HOVER)
-        self.btn_hybrid.configure(command=lambda: toggle_common_cmd(self.hybrid_var, self.btn_hybrid))
+                                        corner_radius=8, height=48, hover_color=COLOR_ACCENT_HOVER,
+                                        command=lambda: on_toggle_simple(self.hybrid_var))
         self.btn_hybrid.grid(row=0, column=2, padx=3, sticky="ew")
 
-        # 4. [新增] 10-BIT 按钮
-        self.btn_10bit = ctk.CTkButton(f_toggles, text="10-BIT\n高色彩", font=FONT_BTN_BIG,
-                                       corner_radius=8, height=48, 
-                                       fg_color="#333333", text_color="#888", # 默认灰色
-                                       hover_color=COLOR_ACCENT_HOVER)
-        self.btn_10bit.configure(command=lambda: toggle_common_cmd(self.depth_10bit_var, self.btn_10bit))
+        # 4. 10-BIT
+        self.btn_10bit = ctk.CTkButton(f_toggles, text="10-BIT\n高色深", font=FONT_BTN_BIG,
+                                       corner_radius=8, height=48, hover_color=COLOR_ACCENT_HOVER,
+                                       command=on_toggle_10bit)
         self.btn_10bit.grid(row=0, column=3, padx=(3, 0), sticky="ew")
 
-        # --- 系统优先级 (保持不变) ---
+        # 初始化一次视觉状态
+        update_btn_visuals()
+
+        # --- 系统优先级 ---
         rowP = ctk.CTkFrame(l_btm, fg_color="transparent")
         rowP.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
         ctk.CTkLabel(rowP, text="PRIORITY / 系统优先级", font=FONT_TITLE_MINI, text_color="#DDD").pack(anchor="w", pady=LABEL_PAD)
+        # [修改] text_color={"selected": "#FFF", "normal": "#AAA"} 显式指定颜色
         self.seg_priority = ctk.CTkSegmentedButton(rowP, values=["NORMAL / 常规", "ABOVE / 较高", "HIGH / 高优先"], 
                                                   variable=self.priority_var, 
                                                   command=lambda v: self.apply_system_priority(v),
-                                                  selected_color=COLOR_ACCENT, corner_radius=8, height=30)
+                                                  selected_color=COLOR_ACCENT, corner_radius=8, height=30,
+                                                  text_color="#DDDDDD", selected_hover_color="#36719f", unselected_hover_color="#444")
         self.seg_priority.pack(fill="x")
 
-        # --- 并发任务 (保持不变) ---
+        # --- 并发任务 ---
         row3 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row3.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
         ctk.CTkLabel(row3, text="CONCURRENCY / 并发任务", font=FONT_TITLE_MINI, text_color="#DDD").pack(anchor="w", pady=LABEL_PAD)
         self.seg_worker = ctk.CTkSegmentedButton(row3, values=["1", "2", "3", "4"], variable=self.worker_var, 
                                                corner_radius=8, height=30, selected_color=COLOR_ACCENT, 
-                                               command=self.update_monitor_layout)
+                                               command=self.update_monitor_layout,
+                                               text_color="#DDDDDD", selected_hover_color="#36719f", unselected_hover_color="#444")
         self.seg_worker.pack(fill="x")
 
-        # --- 画质滑块 (逻辑微调) ---
+        # --- 画质滑块 ---
         row2 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row2.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
-        
-        # [修改] 初始状态是 CPU，所以显示 CRF
         self.lbl_quality_title = ctk.CTkLabel(row2, text="QUALITY (CRF) / 恒定速率", font=FONT_TITLE_MINI, text_color="#DDD")
         self.lbl_quality_title.pack(anchor="w", pady=LABEL_PAD)
         
         c_box = ctk.CTkFrame(row2, fg_color="transparent")
         c_box.pack(fill="x")
-        
-        # [修改] 滑块范围调整：为了适配 CQ 的高数值，建议把最大值从 35 放到 40
         slider = ctk.CTkSlider(c_box, from_=16, to=40, variable=self.crf_var, progress_color=COLOR_ACCENT, height=20)
         slider.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        
         ctk.CTkLabel(c_box, textvariable=self.crf_var, width=35, font=("Arial", 12, "bold"), text_color=COLOR_ACCENT).pack(side="right")
 
         # --- 编码格式 ---
         row1 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row1.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
         ctk.CTkLabel(row1, text="CODEC / 编码格式", font=FONT_TITLE_MINI, text_color="#DDD").pack(anchor="w", pady=LABEL_PAD)
-        # 高度恢复到 30
+        
+        # [修改] 增加 command 绑定 on_codec_change
         self.seg_codec = ctk.CTkSegmentedButton(row1, values=["H.264", "H.265", "AV1"], 
-                                                variable=self.codec_var, selected_color=COLOR_ACCENT, corner_radius=8, height=30)
+                                                variable=self.codec_var, selected_color=COLOR_ACCENT, 
+                                                corner_radius=8, height=30,
+                                                command=on_codec_change,
+                                                text_color="#DDDDDD", selected_hover_color="#36719f", unselected_hover_color="#444")
         self.seg_codec.pack(fill="x")
 
         # --- 启动按钮 ---
-        # [修改] text改为 "COMPRESS / 压制"
         self.btn_action = ctk.CTkButton(l_btm, text="COMPRESS / 压制", height=55, corner_radius=12, 
                                    font=("微软雅黑", 18, "bold"), fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, 
                                    text_color="#000", command=self.toggle_action)
         self.btn_action.pack(fill="x", padx=UNIFIED_PAD_X, pady=20)
 
         # --- 列表区 ---
-        # 1. 列表容器 (先创建，但不 Pack，交给 check_placeholder 管理)
         self.scroll = ctk.CTkScrollableFrame(left, fg_color="transparent")
-        
-        # 2. [修改] 占位符现在直接挂在 left 面板上，不再塞进 scroll 里
         self.lbl_placeholder = ctk.CTkLabel(
-            left, # <--- 关键修改：父对象改为 left
+            left, 
             text="📂\n\nDrag & Drop Video Files Here\n拖入视频文件开启任务",
             font=("微软雅黑", 16, "bold"),
             text_color="#444444",
             justify="center"
         )
-
-        # 3. 初始化状态检查 (这一步会自动决定显示哪一个)
         self.check_placeholder()
 
         # --- 右侧面板 ---
