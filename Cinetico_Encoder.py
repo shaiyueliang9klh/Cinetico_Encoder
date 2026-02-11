@@ -1999,7 +1999,7 @@ class UltraEncoderApp(DnDWindow):
             return {"can_hw_decode": False, "pix_fmt": "unknown", "codec_name": "unknown"}
 
     # =========================================================================
-    # === [V7.1 修复版] 核心计算任务 (修复回写失败误删问题) ===
+    # === [V7.2 终极版] 核心计算任务 (修复假死感 + 找回压缩比显示) ===
     # =========================================================================
     def _worker_compute_task(self, task_file):
         card = self.task_widgets[task_file]
@@ -2008,14 +2008,14 @@ class UltraEncoderApp(DnDWindow):
         ch_ui = None
         proc = None
         
-        # [安全初始化] 提前定义变量，防止 try 块报错导致 finally 找不到变量
+        # 安全初始化变量
         working_output_file = None 
         temp_audio_wav = os.path.join(self.temp_dir, f"TEMP_AUDIO_{uuid.uuid4().hex}.wav")
         output_log = []
         input_size = 0
         duration = 1.0
         
-        # --- 资源申请 ---
+        # --- 1. 资源申请 ---
         with self.slot_lock:
             if self.available_indices:
                 slot_idx = self.available_indices.pop(0)
@@ -2030,6 +2030,10 @@ class UltraEncoderApp(DnDWindow):
             ch_ui = DummyUI()
 
         try:
+            # === [改动1] 拿到槽位立刻激活 UI，防止用户觉得卡死 ===
+            # 先给用户一个 "正在准备" 的信号，清空之前的波形
+            self.safe_update(ch_ui.activate, fname, "⏳ 正在预处理 / Pre-processing...")
+
             # 0. 基础信息获取
             if os.path.exists(task_file):
                 input_size = os.path.getsize(task_file)
@@ -2044,7 +2048,10 @@ class UltraEncoderApp(DnDWindow):
             # --- 阶段 1: 音频预处理 ---
             has_audio = False
             if need_audio_extract:
+                # === [改动2] 在监控屏上也提示正在提取音频 ===
+                self.safe_update(ch_ui.activate, fname, "🎵 正在分离音频流 / Extracting Audio...")
                 self.safe_update(card.set_status, "🎵 提取音频...", COLOR_READING, STATE_ENCODING)
+                
                 extract_cmd = [
                     "ffmpeg", "-y", "-i", task_file, 
                     "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
@@ -2067,7 +2074,7 @@ class UltraEncoderApp(DnDWindow):
             if is_mixed_mode and is_even_slot: final_hw_decode = False 
             final_hw_encode = using_gpu
 
-            # --- 路径准备 (你的逻辑在这里) ---
+            # --- 路径准备 ---
             input_video_source = task_file
             if not final_hw_decode and card.source_mode == "RAM":
                 token = PATH_TO_TOKEN_MAP.get(task_file)
@@ -2079,11 +2086,9 @@ class UltraEncoderApp(DnDWindow):
             f_name_no_ext = os.path.splitext(fname)[0]
             date_str = time.strftime("%Y%m%d")
             
-            # 1. 最终目的地 (HDD)
             final_filename = f"{f_name_no_ext}_Compressed_{date_str}.mp4"
             final_output_path = os.path.join(output_dir, final_filename)
 
-            # 2. 临时生成地 (SSD)
             temp_output_filename = f"TEMP_ENC_{uuid.uuid4().hex}.mp4"
             working_output_file = os.path.join(self.temp_dir, temp_output_filename)
 
@@ -2133,6 +2138,7 @@ class UltraEncoderApp(DnDWindow):
                     except: pass
             threading.Thread(target=log_stderr, args=(proc,), daemon=True).start()
 
+            # 正式开始编码，更新监控屏信息
             info_decode = "GPU" if final_hw_decode else "CPU"
             info_encode = "GPU" if final_hw_encode else "CPU"
             tag_info = f"Dec:{info_decode} | Enc:{info_encode}"
@@ -2187,30 +2193,41 @@ class UltraEncoderApp(DnDWindow):
             if self.stop_flag:
                 self.safe_update(card.set_status, "已停止", COLOR_PAUSED, STATE_PENDING)
             elif proc.returncode == 0:
-                # === [逻辑核心：回写机制] ===
                 try:
                     self.safe_update(card.set_status, "📦 正在回写...", COLOR_MOVING, STATE_DONE)
                     
                     if os.path.exists(working_output_file):
-                        # move 成功后，源文件会自动消失
                         shutil.move(working_output_file, final_output_path)
                     
                     if self.keep_meta_var.get() and os.path.exists(final_output_path):
                         shutil.copystat(task_file, final_output_path)
 
-                    self.safe_update(card.set_status, "完成", COLOR_SUCCESS, STATE_DONE)
+                    # === [改动3] 找回压缩比显示逻辑 ===
+                    final_size_mb = 0
+                    ratio_str = ""
+                    try:
+                        final_size_mb = os.path.getsize(final_output_path)
+                        # 计算节省了多少百分比: (1 - 新/旧) * 100
+                        saved_percent = (1.0 - (final_size_mb / input_size)) * 100
+                        # 如果变大了，显示 +xx%
+                        if saved_percent < 0:
+                            ratio_str = f"(+{abs(saved_percent):.1f}%)"
+                        else:
+                            ratio_str = f"(-{saved_percent:.1f}%)"
+                    except: pass
+                    
+                    # 组合最终状态文字： "完成 (-45.2%)"
+                    status_text = f"完成 {ratio_str}"
+                    self.safe_update(card.set_status, status_text, COLOR_SUCCESS, STATE_DONE)
+                    # ==================================
+
                     self.safe_update(card.set_progress, 1.0, COLOR_SUCCESS)
                 
                 except Exception as move_err:
                     print(f"Move Error: {move_err}")
                     self.safe_update(card.set_status, "回写失败", COLOR_ERROR, STATE_ERROR)
-                    
-                    # [关键修复] 如果回写失败，我们通知用户文件保存在缓存池
-                    # 此时必须把 working_output_file 变量设为 None
-                    # 这样 finally 块就不会因为看到这个变量而把它当做垃圾文件删掉了！
                     saved_path = working_output_file
                     working_output_file = None 
-                    
                     self.show_custom_popup("回写错误", f"无法移回原目录，已保留在缓存池：\n{saved_path}")
 
             else:
@@ -2229,11 +2246,6 @@ class UltraEncoderApp(DnDWindow):
                  del GLOBAL_RAM_STORAGE[token]
                  del PATH_TO_TOKEN_MAP[task_file]
 
-            # [清理垃圾]
-            # 只有当 working_output_file 变量还不为 None 时才删除
-            # 如果上面回写成功，move 会让文件消失，这里 exists 为 False -> 安全
-            # 如果回写失败，变量被设为 None，这里进不去 -> 安全
-            # 如果转码中途失败/停止，变量还在且文件存在 -> 删除 -> 正确
             if working_output_file and os.path.exists(working_output_file):
                 try: os.remove(working_output_file)
                 except: pass
