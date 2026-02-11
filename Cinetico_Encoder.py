@@ -2089,7 +2089,11 @@ class UltraEncoderApp(DnDWindow):
 
             output_dir = os.path.dirname(task_file)
             f_name_no_ext = os.path.splitext(fname)[0]
-            working_output_file = os.path.join(output_dir, f"{f_name_no_ext}_Cinético.mp4")
+            
+            # [修改] 动态生成日期后缀 (格式: YYYYMMDD)
+            # 例如: Frog_Compressed_20260211.mp4
+            date_str = time.strftime("%Y%m%d")
+            working_output_file = os.path.join(output_dir, f"{f_name_no_ext}_Compressed_{date_str}.mp4")
 
             # --- 组装 FFmpeg 命令 ---
             cmd = ["ffmpeg", "-y"]
@@ -2255,6 +2259,23 @@ class UltraEncoderApp(DnDWindow):
                     self.available_indices.sort()
 
 # 程序入口
+# 程序入口
 if __name__ == "__main__":
+    # --- [最终修正] 窗口隐藏逻辑 ---
+    try:
+        import ctypes
+        # 1. 获取当前黑框的句柄
+        whnd = ctypes.windll.kernel32.GetConsoleWindow()
+        
+        # 2. 只要句柄存在，就把它“变没”
+        if whnd != 0:
+            # 参数 0 = SW_HIDE (完全隐藏，任务栏也不显示)
+            # 相比 FreeConsole，这种方法更稳定，不会导致后续 print 报错
+            ctypes.windll.user32.ShowWindow(whnd, 0)
+            
+    except Exception:
+        pass # 就算隐藏失败，也不要影响主程序启动
+    # -----------------------------
+
     app = UltraEncoderApp()
     app.mainloop()
