@@ -1999,7 +1999,7 @@ class UltraEncoderApp(DnDWindow):
             return {"can_hw_decode": False, "pix_fmt": "unknown", "codec_name": "unknown"}
 
     # =========================================================================
-    # === [V7.0 工业级重构版] 核心计算任务 (自动降级策略) ===
+    # === [V7.1 修复版] 核心计算任务 (修复回写失败误删问题) ===
     # =========================================================================
     def _worker_compute_task(self, task_file):
         card = self.task_widgets[task_file]
@@ -2007,6 +2007,9 @@ class UltraEncoderApp(DnDWindow):
         slot_idx = -1
         ch_ui = None
         proc = None
+        
+        # [安全初始化] 提前定义变量，防止 try 块报错导致 finally 找不到变量
+        working_output_file = None 
         temp_audio_wav = os.path.join(self.temp_dir, f"TEMP_AUDIO_{uuid.uuid4().hex}.wav")
         output_log = []
         input_size = 0
@@ -2033,15 +2036,12 @@ class UltraEncoderApp(DnDWindow):
                 duration = self.get_dur(task_file)
                 if duration <= 0: duration = 1.0
 
-            # 1. 智能预检：判断是否需要音频分离 & 是否支持硬解
-            # 索尼素材必须分离音频，否则时间戳必挂
+            # 1. 智能预检
             need_audio_extract = True 
-            
-            # 检测视频解码能力
             decode_info = self.check_decoding_capability(task_file)
             hw_decode_allowed = decode_info["can_hw_decode"]
             
-            # --- 阶段 1: 音频预处理 (WAV 落地) ---
+            # --- 阶段 1: 音频预处理 ---
             has_audio = False
             if need_audio_extract:
                 self.safe_update(card.set_status, "🎵 提取音频...", COLOR_READING, STATE_ENCODING)
@@ -2055,32 +2055,20 @@ class UltraEncoderApp(DnDWindow):
                 if os.path.exists(temp_audio_wav) and os.path.getsize(temp_audio_wav) > 1024:
                     has_audio = True
 
-            # --- 阶段 2: 构建“自适应”压制命令 ---
+            # --- 阶段 2: 构建命令 ---
             self.safe_update(card.set_status, "▶️ 智能编码中...", COLOR_ACCENT, STATE_ENCODING)
             
-            # 用户设置
             codec_sel = self.codec_var.get()
-            using_gpu = self.gpu_var.get() # 用户总开关
+            using_gpu = self.gpu_var.get()
             is_mixed_mode = self.hybrid_var.get()
             is_even_slot = (slot_idx % 2 == 0)
 
-            # 决策链：最终是否开启硬件解码？
-            # 必须满足 3 个条件：
-            # 1. 用户开启 GPU 开关
-            # 2. 显卡物理支持该格式 (4:2:0)
-            # 3. 没有开启“异构分流”的 CPU 强制位
             final_hw_decode = using_gpu and hw_decode_allowed
-            if is_mixed_mode and is_even_slot:
-                final_hw_decode = False # 异构模式下，偶数槽强制用 CPU 解码
-
-            # 决策链：最终是否开启硬件编码？
-            # 只要用户开了 GPU，我们就尽量用 GPU 编码 (NVENC)，这个兼容性很好
+            if is_mixed_mode and is_even_slot: final_hw_decode = False 
             final_hw_encode = using_gpu
 
-            # --- 路径准备 ---
+            # --- 路径准备 (你的逻辑在这里) ---
             input_video_source = task_file
-            # 只有在 CPU 解码模式下，才敢用 RAM 内存流
-            # 因为 NVIDIA 驱动读取 HTTP 流有时候会有 Bug，读本地文件最稳
             if not final_hw_decode and card.source_mode == "RAM":
                 token = PATH_TO_TOKEN_MAP.get(task_file)
                 if token: input_video_source = f"http://127.0.0.1:{self.global_port}/{token}"
@@ -2089,91 +2077,69 @@ class UltraEncoderApp(DnDWindow):
 
             output_dir = os.path.dirname(task_file)
             f_name_no_ext = os.path.splitext(fname)[0]
-            
-            # [修改] 动态生成日期后缀 (格式: YYYYMMDD)
-            # 例如: Frog_Compressed_20260211.mp4
             date_str = time.strftime("%Y%m%d")
-            working_output_file = os.path.join(output_dir, f"{f_name_no_ext}_Compressed_{date_str}.mp4")
+            
+            # 1. 最终目的地 (HDD)
+            final_filename = f"{f_name_no_ext}_Compressed_{date_str}.mp4"
+            final_output_path = os.path.join(output_dir, final_filename)
+
+            # 2. 临时生成地 (SSD)
+            temp_output_filename = f"TEMP_ENC_{uuid.uuid4().hex}.mp4"
+            working_output_file = os.path.join(self.temp_dir, temp_output_filename)
 
             # --- 组装 FFmpeg 命令 ---
             cmd = ["ffmpeg", "-y"]
             
-            # [A] 硬件解码参数 (Input Options)
             if final_hw_decode:
-                # 只有确认支持 4:2:0 且用户开启时，才加这行
                 cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
-                # 显存回收参数 (防止多任务炸显存)
                 cmd.extend(["-extra_hw_frames", "2"]) 
 
-            # [B] 输入文件
             if not final_hw_decode and card.source_mode == "RAM":
                 cmd.extend(["-probesize", "50M", "-analyzeduration", "100M"])
             
             cmd.extend(["-i", input_video_source])
-            if has_audio:
-                cmd.extend(["-i", temp_audio_wav])
+            if has_audio: cmd.extend(["-i", temp_audio_wav])
 
-            # [C] 映射流
             cmd.extend(["-map", "0:v:0"])
             if has_audio: cmd.extend(["-map", "1:a:0"])
 
-            # [D] 视频编码参数 (Output Options)
-            v_codec = "libx264" # 默认 fallback
-            
+            v_codec = "libx264" 
             if final_hw_encode:
-                # === GPU 编码分支 (NVENC) ===
                 if "H.264" in codec_sel: v_codec = "h264_nvenc"
                 elif "H.265" in codec_sel: v_codec = "hevc_nvenc"
                 elif "AV1" in codec_sel: v_codec = "av1_nvenc"
                 cmd.extend(["-c:v", v_codec])
-
-                # 关键：像素格式处理
-                if final_hw_decode:
-                    # 全链路 GPU：直接在显存内缩放/转换，性能最强
-                    cmd.extend(["-vf", "scale_cuda=format=yuv420p"]) 
-                else:
-                    # 半链路 (CPU解->GPU压)：需要手动上传数据到 GPU
-                    # 索尼素材通常是 10bit 422，必须先转成 yuv420p 才能喂给 NVENC
-                    cmd.extend(["-pix_fmt", "yuv420p"]) 
-
-                # 码率控制
+                if final_hw_decode: cmd.extend(["-vf", "scale_cuda=format=yuv420p"]) 
+                else: cmd.extend(["-pix_fmt", "yuv420p"]) 
                 cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), "-b:v", "0"])
-                if "AV1" not in codec_sel: cmd.extend(["-preset", "p4"]) # P4 是速度/画质平衡点
-            
+                if "AV1" not in codec_sel: cmd.extend(["-preset", "p4"])
             else:
-                # === CPU 编码分支 (x264/x265) ===
                 if "H.265" in codec_sel: v_codec = "libx265"
                 elif "AV1" in codec_sel: v_codec = "libsvtav1"
                 cmd.extend(["-c:v", v_codec, "-pix_fmt", "yuv420p", "-crf", str(self.crf_var.get()), "-preset", "medium"])
 
-            # [E] 音频编码参数
-            if has_audio:
-                cmd.extend(["-c:a", "aac", "-b:a", "320k"])
-
-            # [F] 杂项
+            if has_audio: cmd.extend(["-c:a", "aac", "-b:a", "320k"])
             if self.keep_meta_var.get(): cmd.extend(["-map_metadata", "0"])
             cmd.extend(["-progress", "pipe:1", "-nostats", working_output_file])
 
-            # --- 阶段 3: 执行与监控 ---
+            # --- 阶段 3: 执行 ---
             si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=si)
             self.active_procs.append(proc)
 
-            # 错误日志捕获线程
             def log_stderr(p):
                 for l in p.stderr:
                     try: output_log.append(l.decode('utf-8', errors='ignore').strip())
                     except: pass
             threading.Thread(target=log_stderr, args=(proc,), daemon=True).start()
 
-            # 生成 UI 标签文字
             info_decode = "GPU" if final_hw_decode else "CPU"
             info_encode = "GPU" if final_hw_encode else "CPU"
             tag_info = f"Dec:{info_decode} | Enc:{info_encode}"
             if card.source_mode == "RAM": tag_info += " | RAM"
             self.safe_update(ch_ui.activate, fname, tag_info)
 
-            # --- 阶段 4: 进度解析循环 (保持原有逻辑) ---
+            # --- 阶段 4: 进度循环 ---
             progress_stats = {}
             start_t = time.time()
             last_ui_update_time = 0 
@@ -2193,7 +2159,6 @@ class UltraEncoderApp(DnDWindow):
                                 current_us = int(value.strip())
                                 prog = min(1.0, (current_us / 1000000.0) / duration)
                                 
-                                # ETA 计算
                                 eta = "--:--"
                                 elapsed = now - start_t
                                 if prog > 0.005:
@@ -2201,7 +2166,6 @@ class UltraEncoderApp(DnDWindow):
                                     if eta_sec < 0: eta_sec = 0
                                     eta = f"{int(eta_sec//60):02d}:{int(eta_sec%60):02d}"
                                 
-                                # 压缩率计算
                                 ratio = 0.0
                                 if os.path.exists(working_output_file) and prog > 0.01:
                                     curr_size = os.path.getsize(working_output_file)
@@ -2216,7 +2180,6 @@ class UltraEncoderApp(DnDWindow):
             proc.wait()
             if proc in self.active_procs: self.active_procs.remove(proc)
 
-            # 善后
             if os.path.exists(temp_audio_wav):
                 try: os.remove(temp_audio_wav)
                 except: pass
@@ -2224,19 +2187,33 @@ class UltraEncoderApp(DnDWindow):
             if self.stop_flag:
                 self.safe_update(card.set_status, "已停止", COLOR_PAUSED, STATE_PENDING)
             elif proc.returncode == 0:
-                # 如果用户开启了“保留信息”，强制同步文件的修改时间
-                if self.keep_meta_var.get() and os.path.exists(working_output_file):
-                    try:
-                        # shutil.copystat 会复制文件的：最后访问时间、最后修改时间、权限位、标志位
-                        # 这样视频在文件夹里看起来就是原汁原味的“旧视频”了
-                        shutil.copystat(task_file, working_output_file)
-                    except Exception as e:
-                        print(f"Meta Copy Error: {e}")
+                # === [逻辑核心：回写机制] ===
+                try:
+                    self.safe_update(card.set_status, "📦 正在回写...", COLOR_MOVING, STATE_DONE)
+                    
+                    if os.path.exists(working_output_file):
+                        # move 成功后，源文件会自动消失
+                        shutil.move(working_output_file, final_output_path)
+                    
+                    if self.keep_meta_var.get() and os.path.exists(final_output_path):
+                        shutil.copystat(task_file, final_output_path)
 
-                self.safe_update(card.set_status, "完成", COLOR_SUCCESS, STATE_DONE)
-                self.safe_update(card.set_progress, 1.0, COLOR_SUCCESS)
+                    self.safe_update(card.set_status, "完成", COLOR_SUCCESS, STATE_DONE)
+                    self.safe_update(card.set_progress, 1.0, COLOR_SUCCESS)
+                
+                except Exception as move_err:
+                    print(f"Move Error: {move_err}")
+                    self.safe_update(card.set_status, "回写失败", COLOR_ERROR, STATE_ERROR)
+                    
+                    # [关键修复] 如果回写失败，我们通知用户文件保存在缓存池
+                    # 此时必须把 working_output_file 变量设为 None
+                    # 这样 finally 块就不会因为看到这个变量而把它当做垃圾文件删掉了！
+                    saved_path = working_output_file
+                    working_output_file = None 
+                    
+                    self.show_custom_popup("回写错误", f"无法移回原目录，已保留在缓存池：\n{saved_path}")
+
             else:
-                # 打印错误日志分析
                 err_msg = self.analyze_ffmpeg_log(output_log)
                 print(f"Task Failed: {fname}\nReason: {err_msg}")
                 self.safe_update(card.set_status, "转码失败", COLOR_ERROR, STATE_ERROR)
@@ -2251,6 +2228,15 @@ class UltraEncoderApp(DnDWindow):
             if token and token in GLOBAL_RAM_STORAGE:
                  del GLOBAL_RAM_STORAGE[token]
                  del PATH_TO_TOKEN_MAP[task_file]
+
+            # [清理垃圾]
+            # 只有当 working_output_file 变量还不为 None 时才删除
+            # 如果上面回写成功，move 会让文件消失，这里 exists 为 False -> 安全
+            # 如果回写失败，变量被设为 None，这里进不去 -> 安全
+            # 如果转码中途失败/停止，变量还在且文件存在 -> 删除 -> 正确
+            if working_output_file and os.path.exists(working_output_file):
+                try: os.remove(working_output_file)
+                except: pass
             
             self.safe_update(ch_ui.reset)
             with self.slot_lock:
