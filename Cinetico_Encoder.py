@@ -545,6 +545,33 @@ class MonitorChannel(ctk.CTkFrame):
         self.lbl_eta.configure(text="ETA: --:--", text_color="#333")
         self.lbl_ratio.configure(text="Ratio: --%", text_color="#333")
 
+class ToastNotification(ctk.CTkFrame):
+    def __init__(self, master, text, icon="ℹ️"):
+        super().__init__(master, fg_color="#1F1F1F", corner_radius=20, border_width=1, border_color="#333")
+        self.place(relx=0.5, rely=0.88, anchor="center")
+        
+        # 内部布局
+        self.lbl_icon = ctk.CTkLabel(self, text=icon, font=("Segoe UI Emoji", 16))
+        self.lbl_icon.pack(side="left", padx=(15, 5), pady=8)
+        
+        self.lbl_text = ctk.CTkLabel(self, text=text, font=("微软雅黑", 12, "bold"), text_color="#EEE")
+        self.lbl_text.pack(side="left", padx=(0, 20), pady=8)
+        
+        # 动画逻辑
+        self.alpha = 0
+        self.lift()
+        self.after(10, self.fade_in)
+
+    def fade_in(self):
+        # Tkinter 伪透明/淡入效果通常很难完美，这里我们用位置移动模拟浮出效果
+        # 或者仅仅是延迟销毁。真正的透明度需要顶级窗口 hack，为了稳定性我们做“上浮+显示”
+        self.after(2500, self.destroy_toast)
+
+    def destroy_toast(self):
+        self.destroy()
+
+    
+
 class TaskCard(ctk.CTkFrame):
     def __init__(self, master, index, filepath, **kwargs):
         super().__init__(master, fg_color=COLOR_CARD, corner_radius=10, border_width=0, **kwargs)
@@ -633,6 +660,8 @@ class HelpWindow(ctk.CTkToplevel):
         self.add_item_block("CPU Encoding Mode", "CPU 纯软解", cpu_advice['en'], cpu_advice['cn'])
         self.add_item_block("GPU Acceleration Mode", "GPU 硬件加速", gpu_advice['en'], gpu_advice['cn'])
         ctk.CTkFrame(self.scroll, height=60, fg_color="transparent").pack()
+
+
 
     def get_hardware_advice(self):
         try: cpu_count = os.cpu_count() or 4
@@ -763,6 +792,12 @@ class UltraEncoderApp(DnDWindow):
             self.dnd_bind('<<Drop>>', self.drop_file)
         self.after(200, self.preload_help_window)
 
+    # 在主类 UltraEncoderApp 中添加调用方法
+    def show_toast(self, message, icon="✨"):
+        if hasattr(self, "current_toast") and self.current_toast.winfo_exists():
+            self.current_toast.destroy()
+        self.current_toast = ToastNotification(self, message, icon)
+
     def show_help(self):
         if not hasattr(self, "help_window") or not self.help_window.winfo_exists():
             self.preload_help_window()
@@ -806,16 +841,46 @@ class UltraEncoderApp(DnDWindow):
                         card = TaskCard(self.scroll, 0, f_norm) 
                         self.task_widgets[f_norm] = card
                     new_added = True
+            
             if not new_added: return
-            self.file_queue.sort(key=lambda x: os.path.getsize(x))
+
+            # === [核心算法：分区排序] ===
+            # 定义不可移动的状态码：完成、错误、运行中、IO中、已缓存
+            LOCKED_STATES = [STATE_DONE, STATE_ERROR, STATE_ENCODING, STATE_QUEUED_IO, STATE_READY, STATE_CACHING]
+            
+            immutable_queue = [] # 不可动区
+            mutable_queue = []   # 可排序区 (纯 Pending)
+
+            for f in self.file_queue:
+                widget = self.task_widgets[f]
+                # 如果任务已经在跑了，或者已经进了内存/SSD缓存，就不要动它的位置
+                if widget.status_code in LOCKED_STATES or widget.source_mode in ["RAM", "SSD_CACHE", "DIRECT"]:
+                    immutable_queue.append(f)
+                else:
+                    mutable_queue.append(f)
+
+            # 对可动区按文件大小排序 (从小到大)
+            mutable_queue.sort(key=lambda x: os.path.getsize(x))
+
+            # 合并队列
+            self.file_queue = immutable_queue + mutable_queue
+            
+            # === [UI 刷新：重绘列表] ===
+            for widget in self.task_widgets.values():
+                widget.pack_forget()
+
             for i, f in enumerate(self.file_queue):
                 if f in self.task_widgets:
                     card = self.task_widgets[f]
-                    card.pack_forget()
                     card.pack(fill="x", pady=4)
                     card.update_index(i + 1)
-            if self.running: self.update_run_status()
-            self.safe_update(self.check_placeholder)
+            
+            # 视觉反馈
+            if self.running: 
+                self.update_run_status()
+                self.show_toast(f"已添加 {len(files)} 个任务 (智能排序完成)", "📥")
+            else:
+                self.check_placeholder()
 
     def update_run_status(self):
         if not self.running: return
@@ -827,15 +892,36 @@ class UltraEncoderApp(DnDWindow):
 
     def apply_system_priority(self, level_text):
         if platform.system() != "Windows": return
+        
         p_val = PRIORITY_NORMAL 
         if "ABOVE" in level_text: p_val = PRIORITY_ABOVE
         elif "HIGH" in level_text: p_val = PRIORITY_HIGH
+        
+        count = 0
         try:
+            # 1. 修改主进程 (Python UI) 优先级
             pid = os.getpid()
             handle = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, pid)
             ctypes.windll.kernel32.SetPriorityClass(handle, p_val)
             ctypes.windll.kernel32.CloseHandle(handle)
+            
+            # 2. [新功能] 实时修改正在运行的 FFmpeg 子进程优先级
+            for proc in self.active_procs:
+                if proc.poll() is None: # 确保进程还活着
+                    try:
+                        child_handle = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0200, False, proc.pid)
+                        if child_handle:
+                            ctypes.windll.kernel32.SetPriorityClass(child_handle, p_val)
+                            ctypes.windll.kernel32.CloseHandle(child_handle)
+                            count += 1
+                    except: pass
         except: pass
+
+        # 3. 触发高端提示
+        status_name = level_text.split(" / ")[0]
+        msg = f"系统优先级已设为: {status_name}"
+        if count > 0: msg += f" (同步应用至 {count} 个任务)"
+        self.show_toast(msg, "🚀")
     
     def on_closing(self):
         if self.running:
@@ -1025,6 +1111,9 @@ class UltraEncoderApp(DnDWindow):
             else: self.crf_var.set(max(16, self.crf_var.get() - 5))
             update_btn_visuals()
             update_labels()
+            # [新增]
+            state_text = "开启" if self.gpu_var.get() else "关闭"
+            self.show_toast(f"GPU 加速已{state_text} (将在下一任务生效)", "⚙️")
         def on_toggle_10bit():
             target = not self.depth_10bit_var.get()
             if target and "H.264" in self.codec_var.get():
@@ -1035,6 +1124,9 @@ class UltraEncoderApp(DnDWindow):
             self.depth_10bit_var.set(target)
             update_btn_visuals()
             update_labels()
+            # [新增]
+            state_text = "开启" if self.gpu_var.get() else "关闭"
+            self.show_toast(f"GPU 加速已{state_text} (将在下一任务生效)", "⚙️")
         def on_codec_change(value):
             if "H.264" in value:
                 if self.gpu_var.get() and self.depth_10bit_var.get():
@@ -1043,6 +1135,9 @@ class UltraEncoderApp(DnDWindow):
                     self.crf_var.set(max(16, self.crf_var.get() - 5))
             update_btn_visuals()
             update_labels() 
+            # [新增]
+            state_text = "开启" if self.gpu_var.get() else "关闭"
+            self.show_toast(f"GPU 加速已{state_text} (将在下一任务生效)", "⚙️")
         def on_toggle_simple(var):
             var.set(not var.get())
             update_btn_visuals()
@@ -1216,8 +1311,12 @@ class UltraEncoderApp(DnDWindow):
         if self.running: return
         self.running = True
         self.stop_flag = False
+        
+        # [修改]：不再禁用 clear 按钮以外的其他按钮，允许用户热修改参数
         self.btn_action.configure(text="STOP / 停止", fg_color="#852222", hover_color="#A32B2B", state="normal")
         self.btn_clear.configure(state="disabled")
+        # 注意：这里删除了对 self.seg_codec 等控件的 disabled 设置（如果有的话）
+
         self.executor.shutdown(wait=False)
         self.executor = ThreadPoolExecutor(max_workers=16)
         self.submitted_tasks.clear()
