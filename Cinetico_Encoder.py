@@ -615,6 +615,7 @@ class TaskCard(ctk.CTkFrame):
         self.progress = ctk.CTkProgressBar(self, height=6, corner_radius=3, progress_color=COLOR_ACCENT, fg_color="#444")
         self.progress.set(0)
         self.progress.grid(row=2, column=0, columnspan=3, sticky="new", padx=12, pady=(0, 10))
+        self.final_output_path = None
 
     def open_location(self):
         try: 
@@ -1084,6 +1085,24 @@ class UltraEncoderApp(DnDWindow):
         except: optimal_n = 2
         return str(optimal_n)
 
+    # [新增] 画质/体积量化分析算法
+    def get_quality_analysis(self, value):
+        val = int(value)
+        
+        # 这里的数值基于 x264/x265/NVENC 的通用经验值
+        if val <= 18:
+            return "Visual: ~99.9% (Lossless-like) | Size: Very Large (原画级 / 极低压缩)", "#2ECC71" # 绿色
+        elif val <= 22:
+            return "Visual: ~95% (High Fidelity) | Size: Large (高保真 / 视觉无损)", "#2ECC71"
+        elif val <= 26:
+            return "Visual: ~85% (Balanced) | Size: Medium (标准 / 均衡推荐)", "#3B8ED0" # 蓝色 (默认)
+        elif val <= 32:
+            return "Visual: ~70% (Compact) | Size: Small (紧凑 / 适合网盘)", "#F1C40F" # 黄色
+        elif val <= 37:
+            return "Visual: ~50% (Low Detail) | Size: Tiny (低画质 / 极限体积)", "#E67E22" # 橙色
+        else:
+            return "Visual: <40% (Artifacts) | Size: Micro (马赛克 / 仅供预览)", "#E74C3C" # 红色
+
     def setup_ui(self):
         SIDEBAR_WIDTH = 420 
         self.grid_columnconfigure(0, weight=0, minsize=SIDEBAR_WIDTH)
@@ -1124,13 +1143,16 @@ class UltraEncoderApp(DnDWindow):
         self.btn_clear.pack(side="left", padx=5)
         l_btm = ctk.CTkFrame(left, fg_color="#222", corner_radius=20)
         l_btm.pack(side="bottom", fill="x", padx=UNIFIED_PAD_X, pady=10)
-        self.gpu_var = ctk.BooleanVar(value=False) 
+        self.gpu_var = ctk.BooleanVar(value=True) 
         self.keep_meta_var = ctk.BooleanVar(value=True)
-        self.hybrid_var = ctk.BooleanVar(value=False) 
+        self.hybrid_var = ctk.BooleanVar(value=True) 
         self.depth_10bit_var = ctk.BooleanVar(value=False)
         self.priority_var = ctk.StringVar(value="HIGH / 高优先") 
         self.worker_var = ctk.StringVar(value="2")
         self.crf_var = ctk.IntVar(value=23)
+        # [新增] 如果默认开启了 GPU，适当提高 CRF 初始值以平衡体积
+        if self.gpu_var.get():
+            self.crf_var.set(28)
         self.codec_var = ctk.StringVar(value="H.264")
         def update_btn_visuals():
             is_gpu = self.gpu_var.get()
@@ -1171,6 +1193,17 @@ class UltraEncoderApp(DnDWindow):
                 self.show_toast(msg, "🚀")
             else:
                 self.show_toast(msg, "⚙️")
+
+            if target: self.crf_var.set(min(40, self.crf_var.get() + 5))
+            else: self.crf_var.set(max(16, self.crf_var.get() - 5))
+            
+            update_btn_visuals()
+            update_labels()
+            
+            # [新增] 手动刷新画质描述文字
+            new_val = self.crf_var.get()
+            q_text, q_col = self.get_quality_analysis(new_val)
+            self.lbl_quality_stats.configure(text=q_text, text_color=q_col)
 
         def on_toggle_10bit():
             target = not self.depth_10bit_var.get()
@@ -1223,6 +1256,23 @@ class UltraEncoderApp(DnDWindow):
         self.btn_meta.grid(row=0, column=1, padx=3, sticky="ew")
         self.btn_hybrid = ctk.CTkButton(f_toggles, text="HYBRID\n异构分流", font=FONT_BTN_BIG, corner_radius=8, height=48, hover_color=COLOR_ACCENT_HOVER, command=lambda: on_toggle_simple(self.hybrid_var))
         self.btn_hybrid.grid(row=0, column=2, padx=3, sticky="ew")
+        
+        # =========================================================
+        # === [新增] Mac 平台智能屏蔽异构分流 ===
+        # =========================================================
+        if platform.system() == "Darwin":
+            self.hybrid_var.set(False) # 强制数据层面关闭
+            self.btn_hybrid.configure(state="disabled", fg_color="#222222", text_color="#555555") # 视觉层面禁用
+            
+            # 定义悬停提示函数
+            def on_hybrid_hover(event):
+                # 利用现有的 Toast 系统提示用户
+                self.show_toast("Mac 统一内存架构无需异构分流 / Not needed on Apple Silicon", "🍎")
+            
+            # 绑定鼠标进入事件
+            self.btn_hybrid.bind("<Enter>", on_hybrid_hover)
+        # =========================================================
+
         self.btn_10bit = ctk.CTkButton(f_toggles, text="10-BIT\n高色深", font=FONT_BTN_BIG, corner_radius=8, height=48, hover_color=COLOR_ACCENT_HOVER, command=on_toggle_10bit)
         self.btn_10bit.grid(row=0, column=3, padx=(3, 0), sticky="ew")
         update_btn_visuals()
@@ -1239,13 +1289,38 @@ class UltraEncoderApp(DnDWindow):
         self.seg_worker.pack(fill="x")
         row2 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row2.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
+        
+        # 1. 标题
         self.lbl_quality_title = ctk.CTkLabel(row2, text="QUALITY (CRF) / 恒定速率", font=FONT_TITLE_MINI, text_color="#DDD")
         self.lbl_quality_title.pack(anchor="w", pady=LABEL_PAD)
+        
+        # 2. 滑块容器
         c_box = ctk.CTkFrame(row2, fg_color="transparent")
         c_box.pack(fill="x")
-        slider = ctk.CTkSlider(c_box, from_=16, to=40, variable=self.crf_var, progress_color=COLOR_ACCENT, height=20)
-        slider.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ctk.CTkLabel(c_box, textvariable=self.crf_var, width=35, font=("Arial", 12, "bold"), text_color=COLOR_ACCENT).pack(side="right")
+        
+        # [修改] 定义滑块回调函数，实时更新下方文字
+        def on_slider_change(value):
+            self.crf_var.set(int(value)) # 确保取整
+            text, color = self.get_quality_analysis(value)
+            self.lbl_quality_stats.configure(text=text, text_color=color)
+
+        # 3. 滑块本体
+        self.slider = ctk.CTkSlider(c_box, from_=16, to=40, variable=self.crf_var, 
+                                  progress_color=COLOR_ACCENT, height=20, 
+                                  command=on_slider_change) # 绑定回调
+        self.slider.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        # 4. 右侧数字显示
+        ctk.CTkLabel(c_box, textvariable=self.crf_var, width=35, font=("Arial", 12, "bold"), 
+                     text_color=COLOR_ACCENT).pack(side="right")
+        
+        # [新增] 5. 下方量化说明标签
+        self.lbl_quality_stats = ctk.CTkLabel(row2, text="", font=("微软雅黑", 10), anchor="w")
+        self.lbl_quality_stats.pack(fill="x", pady=(2, 0))
+        
+        # 初始化显示一次
+        init_text, init_col = self.get_quality_analysis(self.crf_var.get())
+        self.lbl_quality_stats.configure(text=init_text, text_color=init_col)
         row1 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row1.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
         ctk.CTkLabel(row1, text="CODEC / 编码格式", font=FONT_TITLE_MINI, text_color="#DDD").pack(anchor="w", pady=LABEL_PAD)
@@ -1542,10 +1617,9 @@ class UltraEncoderApp(DnDWindow):
         top.grab_set()
 
     def launch_fireworks(self):
-        # 1. 基础检查：如果窗口不存在直接返回
+        # 基础检查：如果窗口不存在直接返回
         if not self.winfo_exists(): return
         
-        # 2. 创建顶层窗口
         try:
             top = ctk.CTkToplevel(self)
             top.title("")
@@ -1555,43 +1629,42 @@ class UltraEncoderApp(DnDWindow):
             top.overrideredirect(True) # 去除标题栏
             top.transient(self)        # 让它跟随主窗口
             
-            # === [核心修改] 跨平台透明化处理 ===
             sys_plat = platform.system()
-            canvas_bg = "black" # 默认背景色
+            canvas_bg = "black" 
 
+            # === [分平台处理透明度] ===
             if sys_plat == "Windows":
-                # Windows 方案：设置背景为黑色，然后告诉系统“黑色=透明”
+                # 恢复 0.9.7 版的 Windows 经典透明方案
                 try:
                     top.attributes("-transparentcolor", "black")
                     top.attributes("-topmost", True)
+                    canvas_bg = "black"
                 except: pass
                 
             elif sys_plat == "Darwin":
-                # Mac 方案：开启真透明模式，并将背景色设为系统透明色
+                # 保留你修好的 Mac 专用方案
                 try:
-                    # Mac 特有的透明属性
                     top.attributes("-transparent", True)  
-                    # 必须将窗口背景和 Canvas 背景都设为 'systemTransparent'
                     top.config(bg='systemTransparent')
                     canvas_bg = 'systemTransparent'
-                    # Mac 上通常不需要 topmost，否则可能挡住其他操作，视情况而定
-                    # top.attributes("-topmost", True) 
-                except Exception as e:
-                    print(f"Mac Transparency Error: {e}")
-                    # 如果真透明失败（旧版系统），回退到半透明黑底，至少能看到烟花
+                except:
                     top.attributes("-alpha", 0.8)
                     canvas_bg = "black"
+            else:
+                # 其他系统（Linux等）保底方案
+                top.attributes("-alpha", 0.9)
+                canvas_bg = "black"
 
-            # 3. 创建画布 (使用根据平台决定的背景色)
+            # 创建画布
             canvas = ctk.CTkCanvas(top, bg=canvas_bg, highlightthickness=0)
             canvas.pack(fill="both", expand=True)
             
-            # 4. 烟花粒子参数 (保持原版数值)
+            # 粒子参数
             particles = []
             colors = [COLOR_ACCENT, "#F1C40F", "#E74C3C", "#2ECC71", "#9B59B6", "#00FFFF", "#FF00FF", "#FFFFFF"] 
             particle_count = 180 
             
-            # 左侧烟花源
+            # 生成粒子逻辑 (左右双源)
             for _ in range(particle_count):
                 particles.append({
                     "x": random.uniform(-50, 100), 
@@ -1604,8 +1677,6 @@ class UltraEncoderApp(DnDWindow):
                     "life": 1.0, 
                     "decay": random.uniform(0.015, 0.030)
                 })
-            
-            # 右侧烟花源
             for _ in range(particle_count):
                 particles.append({
                     "x": random.uniform(w-100, w+50), 
@@ -1619,7 +1690,6 @@ class UltraEncoderApp(DnDWindow):
                     "decay": random.uniform(0.015, 0.030)
                 })
 
-            # 5. 动画循环逻辑
             def animate():
                 if not top.winfo_exists(): return
                 try:
@@ -1629,8 +1699,6 @@ class UltraEncoderApp(DnDWindow):
                         if p["life"] > 0:
                             alive_count += 1
                             tail_x, tail_y = p["x"], p["y"]
-                            
-                            # 物理更新
                             p["x"] += p["vx"]
                             p["y"] += p["vy"]
                             p["vy"] += p["grav"] 
@@ -1644,167 +1712,65 @@ class UltraEncoderApp(DnDWindow):
                                     width=p["size"] * p["life"], 
                                     capstyle="round"
                                 )
-                    
                     if alive_count > 0: 
-                        top.after(16, animate) # 约 60FPS
+                        top.after(16, animate)
                     else: 
                         top.destroy()
-                        # 动画结束后，额外弹出一个 Toast 确保用户看到状态
                         self.show_toast("✨ 所有任务已完成 / All Tasks Finished! ✨", "🏆")
                 except:
                     if top.winfo_exists(): top.destroy()
 
-            # 启动动画
             animate()
             
         except Exception as e:
-            print(f"Animation Error: {e}")
-            # 兜底方案：如果动画完全挂了，至少显示文字提示
+            print(f"Firework Error: {e}")
             if 'top' in locals() and top.winfo_exists(): top.destroy()
             self.show_toast("✨ 所有任务已完成 / All Tasks Finished! ✨", "🏆")
-            
-        # === [兼容性修复] ===
-        # Mac/Linux 不支持 -transparentcolor，会导致黑屏遮挡。
-        # 因此在非 Windows 系统下，直接调用 Toast 通知代替动画。
-        if platform.system() != "Windows":
-            self.show_toast("✨ 所有任务已完成 / All Tasks Finished! ✨", "🏆")
-            return
 
-        if not self.winfo_exists(): return
-        
-        try:
-            top = ctk.CTkToplevel(self)
-            top.title("")
-            w, h = self.winfo_width(), self.winfo_height()
-            x, y = self.winfo_x(), self.winfo_y()
-            top.geometry(f"{w}x{h}+{x}+{y}")
-            top.overrideredirect(True)
-            top.transient(self)
-            
-            # Windows 专用透明穿透
-            # 如果在某些魔改版 Windows 系统报错，try-except 会捕获并安全退出
-            try:
-                top.attributes("-transparentcolor", "black")
-                top.attributes("-topmost", True) # 确保烟花在最上层
-            except:
-                top.destroy()
-                return
+    def print_batch_summary(self):
+        total_in_bytes = 0
+        total_out_bytes = 0
+        file_count = 0
 
-            canvas = ctk.CTkCanvas(top, bg="black", highlightthickness=0)
-            canvas.pack(fill="both", expand=True)
-            
-            particles = []
-            colors = [COLOR_ACCENT, "#F1C40F", "#E74C3C", "#2ECC71", "#9B59B6", "#00FFFF", "#FF00FF", "#FFFFFF"] 
-            
-            # 增加粒子数量让效果更惊艳
-            particle_count = 180 
-            
-            # 左侧烟花源
-            for _ in range(particle_count):
-                particles.append({
-                    "x": random.uniform(-50, 100), 
-                    "y": h + random.uniform(0, 30), 
-                    "vx": random.gauss(18, 10),     # 调整喷射角度
-                    "vy": random.gauss(-45, 12),    # 调整高度
-                    "grav": 2.0, 
-                    "size": random.uniform(3, 8), 
-                    "color": random.choice(colors), 
-                    "life": 1.0, 
-                    "decay": random.uniform(0.015, 0.030) # 随机衰减
-                })
-            
-            # 右侧烟花源
-            for _ in range(particle_count):
-                particles.append({
-                    "x": random.uniform(w-100, w+50), 
-                    "y": h + random.uniform(0, 30), 
-                    "vx": random.gauss(-18, 10), 
-                    "vy": random.gauss(-45, 12), 
-                    "grav": 1.6, 
-                    "size": random.uniform(3, 8), 
-                    "color": random.choice(colors), 
-                    "life": 1.0, 
-                    "decay": random.uniform(0.015, 0.030)
-                })
+        print("\n" + "="*50)
+        print("          BATCH COMPRESSION SUMMARY          ")
+        print("="*50)
 
-            def animate():
-                if not top.winfo_exists(): return
-                try:
-                    canvas.delete("all")
-                    alive_count = 0
-                    for p in particles:
-                        if p["life"] > 0:
-                            alive_count += 1
-                            tail_x, tail_y = p["x"], p["y"]
-                            
-                            # 物理模拟更新
-                            p["x"] += p["vx"]
-                            p["y"] += p["vy"]
-                            p["vy"] += p["grav"] 
-                            p["vx"] *= 0.96      # 增加空气阻力，效果更自然
-                            p["life"] -= p["decay"]
-                            
-                            if p["life"] > 0.05:
-                                # 绘制流星拖尾效果
-                                canvas.create_line(
-                                    tail_x, tail_y, p["x"], p["y"], 
-                                    fill=p["color"], 
-                                    width=p["size"] * p["life"], 
-                                    capstyle="round"
-                                )
-                    
-                    if alive_count > 0: 
-                        top.after(16, animate) # 锁定约 60FPS
-                    else: 
-                        top.destroy()
-                except:
-                    # 容错处理：如果窗口在动画中途被关闭
-                    if top.winfo_exists(): top.destroy()
+        with self.queue_lock:
+            for f in self.file_queue:
+                card = self.task_widgets[f]
+                # 只统计成功完成的任务
+                if card.status_code == STATE_DONE and card.final_output_path and os.path.exists(card.final_output_path):
+                    try:
+                        in_size = os.path.getsize(f)
+                        out_size = os.path.getsize(card.final_output_path)
+                        
+                        total_in_bytes += in_size
+                        total_out_bytes += out_size
+                        file_count += 1
+                        
+                        # 打印单个文件详情（可选）
+                        # ratio = (out_size / in_size) * 100
+                        # print(f"[{file_count}] {os.path.basename(f)}: {ratio:.1f}%")
+                    except: pass
 
-            animate()
+        if file_count == 0:
+            print("No files were successfully processed.")
+        else:
+            total_in_mb = total_in_bytes / (1024 * 1024)
+            total_out_mb = total_out_bytes / (1024 * 1024)
+            saved_mb = total_in_mb - total_out_mb
             
-        except Exception as e:
-            print(f"Animation Error: {e}")
-            # 发生任何错误都直接销毁窗口，防止残留黑框
-            if 'top' in locals() and top.winfo_exists():
-                top.destroy()
-                
-        if not self.winfo_exists(): return
-        top = ctk.CTkToplevel(self)
-        top.title("")
-        w, h = self.winfo_width(), self.winfo_height()
-        x, y = self.winfo_x(), self.winfo_y()
-        top.geometry(f"{w}x{h}+{x}+{y}")
-        top.overrideredirect(True)
-        top.transient(self)
-        top.attributes("-transparentcolor", "black") 
-        canvas = ctk.CTkCanvas(top, bg="black", highlightthickness=0)
-        canvas.pack(fill="both", expand=True)
-        particles = []
-        colors = [COLOR_ACCENT, "#F1C40F", "#E74C3C", "#2ECC71", "#9B59B6", "#00FFFF", "#FF00FF", "#FFFFFF"] 
-        particle_count = 150 
-        for _ in range(particle_count):
-            particles.append({"x": random.uniform(-50, 100), "y": h + random.uniform(0, 30), "vx": random.gauss(15, 10), "vy": random.gauss(-40, 12), "grav": 2.0, "size": random.uniform(3, 8), "color": random.choice(colors), "life": 1.0, "decay": random.uniform(0.012, 0.025)})
-        for _ in range(particle_count):
-            particles.append({"x": random.uniform(w-100, w+50), "y": h + random.uniform(0, 30), "vx": random.gauss(-15, 10), "vy": random.gauss(-40, 12), "grav": 1.6, "size": random.uniform(3, 8), "color": random.choice(colors), "life": 1.0, "decay": random.uniform(0.012, 0.025)})
-        def animate():
-            if not top.winfo_exists(): return
-            canvas.delete("all")
-            alive_count = 0
-            for p in particles:
-                if p["life"] > 0:
-                    alive_count += 1
-                    tail_x, tail_y = p["x"], p["y"]
-                    p["x"] += p["vx"]
-                    p["y"] += p["vy"]
-                    p["vy"] += p["grav"] 
-                    p["vx"] *= 0.97      
-                    p["life"] -= p["decay"]
-                    if p["life"] > 0.05:
-                        canvas.create_line(tail_x, tail_y, p["x"], p["y"], fill=p["color"], width=p["size"] * p["life"], capstyle="round")
-            if alive_count > 0: top.after(15, animate)
-            else: top.destroy()
-        animate()
+            # 平均压缩率 (总输出 / 总输入)
+            avg_ratio = (total_out_bytes / total_in_bytes) * 100 if total_in_bytes > 0 else 0
+            
+            print(f"Total Files Processed : {file_count}")
+            print(f"Total Original Size   : {total_in_mb:.2f} MB ({total_in_mb/1024:.2f} GB)")
+            print(f"Total Compressed Size : {total_out_mb:.2f} MB ({total_out_mb/1024:.2f} GB)")
+            print("-" * 50)
+            print(f"Space Saved           : {saved_mb:.2f} MB")
+            print(f"Average Ratio         : {avg_ratio:.2f}% (Output is {avg_ratio:.2f}% of Original)")
+        print("="*50 + "\n")
 
     def engine(self):
         total_ram_limit = MAX_RAM_LOAD_GB 
@@ -1865,6 +1831,7 @@ class UltraEncoderApp(DnDWindow):
         self.running = False
         if not self.stop_flag:
             self.safe_update(self.launch_fireworks)
+            self.print_batch_summary()
             def set_complete_state():
                 self.btn_action.configure(text="COMPLETED / 已完成", fg_color=COLOR_SUCCESS, hover_color="#27AE60", state="disabled")
                 self.lbl_run_status.configure(text="✨ All Tasks Finished")
@@ -1886,10 +1853,26 @@ class UltraEncoderApp(DnDWindow):
 
     def analyze_ffmpeg_log(self, logs):
         log_text = "\n".join(logs[-30:]) 
-        error_patterns = [("Permission denied", "❌ 文件权限不足"), ("No such file", "❌ 找不到输入文件"), ("Unknown encoder", "❌ 找不到编码器"), ("Device mismatch", "❌ 显卡设备不匹配"), ("out of memory", "❌ 显存/内存不足"), ("Tag", "❌ 容器格式不兼容"), ("Invalid data", "❌ 数据流损坏"), ("Server returned 404", "❌ 内存数据丢失"), ("Qavg: nan", "❌ 音频编码崩溃"), ("aac", "❌ 音频格式错误")]
+        # [修正] 删除了 ("aac", ...) 这个会导致误报的条目
+        error_patterns = [
+            ("Permission denied", "❌ 文件权限不足"), 
+            ("No such file", "❌ 找不到输入文件"), 
+            ("Unknown encoder", "❌ 找不到编码器"), 
+            ("Device mismatch", "❌ 显卡设备不匹配"), 
+            ("out of memory", "❌ 显存/内存不足"), 
+            ("Tag", "❌ 容器格式不兼容"), 
+            ("Invalid data", "❌ 数据流损坏"), 
+            ("Server returned 404", "❌ 内存数据丢失"), 
+            ("Qavg: nan", "❌ 音频编码崩溃")
+        ]
         for pattern, reason in error_patterns:
             if pattern in log_text or pattern.lower() in log_text.lower(): return reason
-        return "❌ 未知错误"
+        
+        # 如果没匹配到已知错误，打印最后几行日志到控制台，方便排查 SSD 到底哪里错了
+        print("--- [Unknown FFmpeg Error Log] ---")
+        print(log_text)
+        print("----------------------------------")
+        return "❌ 未知错误 (请查看控制台)"
 
     def check_decoding_capability(self, input_path):
         try:
@@ -1962,7 +1945,8 @@ class UltraEncoderApp(DnDWindow):
                 token = PATH_TO_TOKEN_MAP.get(task_file)
                 if token: input_video_source = f"http://127.0.0.1:{self.global_port}/{token}"
             elif card.source_mode == "SSD_CACHE" and card.ssd_cache_path:
-                input_video_source = card.ssd_cache_path
+                # [新增] 强制转换为绝对路径，防止 FFmpeg 在不同盘符间迷路
+                input_video_source = os.path.abspath(card.ssd_cache_path)
             output_dir = os.path.dirname(task_file)
             f_name_no_ext = os.path.splitext(fname)[0]
             date_str = time.strftime("%Y%m%d")
@@ -1984,7 +1968,7 @@ class UltraEncoderApp(DnDWindow):
                 else:
                     # Windows (NVIDIA) 硬件解码
                     cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
-                    cmd.extend(["-extra_hw_frames", "2"]) 
+                    # cmd.extend(["-extra_hw_frames", "2"]) 
 
             # --- 2. 输入源参数 ---
             if not final_hw_decode and card.source_mode == "RAM":
@@ -2146,6 +2130,7 @@ class UltraEncoderApp(DnDWindow):
                     self.safe_update(card.set_status, "📦 正在回写...", COLOR_MOVING, STATE_DONE)
                     if os.path.exists(working_output_file): shutil.move(working_output_file, final_output_path)
                     if self.keep_meta_var.get() and os.path.exists(final_output_path): shutil.copystat(task_file, final_output_path)
+                    card.final_output_path = final_output_path
                     final_size_mb = 0
                     ratio_str = ""
                     try:
