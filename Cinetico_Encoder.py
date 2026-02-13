@@ -1086,22 +1086,23 @@ class UltraEncoderApp(DnDWindow):
         return str(optimal_n)
 
     # [新增] 画质/体积量化分析算法
+    # [修改] 画质/体积量化分析算法 (Icon 版)
     def get_quality_analysis(self, value):
         val = int(value)
         
-        # 这里的数值基于 x264/x265/NVENC 的通用经验值
-        if val <= 18:
-            return "Visual: ~99.9% (Lossless-like) | Size: Very Large (原画级 / 极低压缩)", "#2ECC71" # 绿色
-        elif val <= 22:
-            return "Visual: ~95% (High Fidelity) | Size: Large (高保真 / 视觉无损)", "#2ECC71"
-        elif val <= 26:
-            return "Visual: ~85% (Balanced) | Size: Medium (标准 / 均衡推荐)", "#3B8ED0" # 蓝色 (默认)
-        elif val <= 32:
-            return "Visual: ~70% (Compact) | Size: Small (紧凑 / 适合网盘)", "#F1C40F" # 黄色
-        elif val <= 37:
-            return "Visual: ~50% (Low Detail) | Size: Tiny (低画质 / 极限体积)", "#E67E22" # 橙色
+        # 细分为 6 个档位，更精准
+        if val <= 17:
+            return "💎 极高画质 / Archival (接近无损/体积极大)"
+        elif val <= 20:
+            return "✨ 高保真 / High Quality (肉眼无损/适合收藏)"
+        elif val <= 24:
+            return "⚖️ 标准 / Balanced (默认推荐/体积适中)"
+        elif val <= 28:
+            return "📱 紧凑 / Compact (适合在线分享/网盘)"
+        elif val <= 33:
+            return "💾 低码率 / Low Bitrate (画质受损/节省空间)"
         else:
-            return "Visual: <40% (Artifacts) | Size: Micro (马赛克 / 仅供预览)", "#E74C3C" # 红色
+            return "🧱 预览级 / Proxy (马赛克严重/仅供参考)"
 
     def setup_ui(self):
         SIDEBAR_WIDTH = 420 
@@ -1202,8 +1203,8 @@ class UltraEncoderApp(DnDWindow):
             
             # [新增] 手动刷新画质描述文字
             new_val = self.crf_var.get()
-            q_text, q_col = self.get_quality_analysis(new_val)
-            self.lbl_quality_stats.configure(text=q_text, text_color=q_col)
+            q_text = self.get_quality_analysis(new_val)
+            self.lbl_quality_stats.configure(text=q_text)
 
         def on_toggle_10bit():
             target = not self.depth_10bit_var.get()
@@ -1287,40 +1288,45 @@ class UltraEncoderApp(DnDWindow):
         self.worker_var = ctk.StringVar(value=self.detect_optimal_concurrency()) 
         self.seg_worker = ctk.CTkSegmentedButton(row3, values=["1", "2", "3", "4"], variable=self.worker_var, corner_radius=8, height=30, selected_color=COLOR_ACCENT, command=self.update_monitor_layout, text_color="#DDDDDD", selected_hover_color="#36719f", unselected_hover_color="#444")
         self.seg_worker.pack(fill="x")
+
+        # 1. 容器定义
         row2 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row2.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
         
-        # 1. 标题
+        # 2. 标题
         self.lbl_quality_title = ctk.CTkLabel(row2, text="QUALITY (CRF) / 恒定速率", font=FONT_TITLE_MINI, text_color="#DDD")
         self.lbl_quality_title.pack(anchor="w", pady=LABEL_PAD)
         
-        # 2. 滑块容器
+        # 3. 滑块容器
         c_box = ctk.CTkFrame(row2, fg_color="transparent")
         c_box.pack(fill="x")
         
-        # [修改] 定义滑块回调函数，实时更新下方文字
+        # [修改] 回调函数：只更新文字，保持颜色静止
         def on_slider_change(value):
-            self.crf_var.set(int(value)) # 确保取整
-            text, color = self.get_quality_analysis(value)
-            self.lbl_quality_stats.configure(text=text, text_color=color)
+            self.crf_var.set(int(value))
+            # 获取带图标的文字
+            text = self.get_quality_analysis(value)
+            # 更新标签，始终使用统一的灰色，显得专业
+            self.lbl_quality_stats.configure(text=text)
 
-        # 3. 滑块本体
+        # 4. 滑块本体 (使用固定的强调色 COLOR_ACCENT)
         self.slider = ctk.CTkSlider(c_box, from_=16, to=40, variable=self.crf_var, 
-                                  progress_color=COLOR_ACCENT, height=20, 
-                                  command=on_slider_change) # 绑定回调
+                                  height=20, progress_color=COLOR_ACCENT,
+                                  command=on_slider_change) 
         self.slider.pack(side="left", fill="x", expand=True, padx=(0, 10))
         
-        # 4. 右侧数字显示
-        ctk.CTkLabel(c_box, textvariable=self.crf_var, width=35, font=("Arial", 12, "bold"), 
-                     text_color=COLOR_ACCENT).pack(side="right")
+        # 5. 右侧数字显示 (固定颜色)
+        self.lbl_val = ctk.CTkLabel(c_box, textvariable=self.crf_var, width=35, 
+                                    font=("Arial", 12, "bold"), text_color=COLOR_ACCENT)
+        self.lbl_val.pack(side="right")
         
-        # [新增] 5. 下方量化说明标签
-        self.lbl_quality_stats = ctk.CTkLabel(row2, text="", font=("微软雅黑", 10), anchor="w")
+        # 6. 下方说明标签 (默认灰色，字体稍微小一点点显得精致)
+        self.lbl_quality_stats = ctk.CTkLabel(row2, text="", font=("微软雅黑", 11), anchor="w", text_color="#AAAAAA")
         self.lbl_quality_stats.pack(fill="x", pady=(2, 0))
         
-        # 初始化显示一次
-        init_text, init_col = self.get_quality_analysis(self.crf_var.get())
-        self.lbl_quality_stats.configure(text=init_text, text_color=init_col)
+        # 初始化刷新
+        self.lbl_quality_stats.configure(text=self.get_quality_analysis(self.crf_var.get()))
+        
         row1 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row1.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
         ctk.CTkLabel(row1, text="CODEC / 编码格式", font=FONT_TITLE_MINI, text_color="#DDD").pack(anchor="w", pady=LABEL_PAD)
