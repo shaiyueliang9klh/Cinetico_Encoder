@@ -1124,7 +1124,15 @@ class UltraEncoderApp(DnDWindow):
         l_head.pack(fill="x", padx=UNIFIED_PAD_X, pady=(20, 5))
         title_box = ctk.CTkFrame(l_head, fg_color="transparent")
         title_box.pack(fill="x")
-        ctk.CTkLabel(title_box, text="Cinético", font=("Segoe UI Black", 36), text_color="#FFF").pack(side="left")
+        # === [字体修复] 自动检测系统选择最粗的字体 ===
+        if platform.system() == "Windows":
+            title_font = ("Segoe UI Black", 36)
+        else:
+            # Mac/Linux 使用 Arial Black (Mac上最接近的粗体)
+            title_font = ("Arial Black", 36)
+            
+        ctk.CTkLabel(title_box, text="Cinético", font=title_font, text_color="#FFF").pack(side="left")
+        # ==========================================        
         btn_help = ctk.CTkButton(title_box, text="❓", width=30, height=30, corner_radius=15, 
                                  fg_color="#333", hover_color="#555", command=self.show_help)
         btn_help.pack(side="right")
