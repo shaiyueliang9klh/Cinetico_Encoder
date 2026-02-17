@@ -652,10 +652,9 @@ class TaskCard(ctk.CTkFrame):
         self.ui_max_progress = 0.0
 
 # =========================================================================
-# [Module 3.5] Help Window (Ported from v0.9.6)
-# [修复版] 已适配 Light/Dark 双色模式
+# [Module 3.5] Help Window (Ported from v0.9.6 & Optimized)
+# [修复版] 已适配 Light/Dark 双色模式，并找回了丢失的技术细节文档
 # =========================================================================
-# [Module 3.5] Help Window (Fix & Optimization)
 class HelpWindow(ctk.CTkToplevel):
     def __init__(self, master, info=None, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
@@ -673,12 +672,12 @@ class HelpWindow(ctk.CTkToplevel):
         self.FONT_BODY_EN = ("Segoe UI", 13)         
         self.FONT_BODY_CN = ("微软雅黑", 13)         
         
-        # --- 颜色配置 ---
+        # --- 颜色配置 (Light, Dark) ---
         self.COL_BG = ("#F3F3F3", "#121212")
         self.COL_CARD = ("#FFFFFF", "#1E1E1E")
         self.COL_TEXT_HI = ("#333333", "#FFFFFF")
         self.COL_TEXT_MED = ("#555555", "#CCCCCC")
-        self.COL_TEXT_LOW = ("#888888", "#888888")
+        self.COL_TEXT_LOW = ("#666666", "#888888")
         self.COL_ACCENT = ("#3B8ED0", "#3B8ED0")
         self.COL_SEP = ("#E0E0E0", "#333333")
 
@@ -697,7 +696,9 @@ class HelpWindow(ctk.CTkToplevel):
         self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.scroll.pack(fill="both", expand=True, padx=30, pady=(0, 30))
 
-        # [智能硬件建议模块] - 修复逻辑：如果有 info 就显示，没有就显示默认
+        # =======================
+        # Part 0: Smart Hardware Advice (Dynamic)
+        # =======================
         self.add_section_title("0. Smart Optimization Guide", "智能并发设置建议")
         self.add_desc_text("Based on your current hardware configuration.\n根据您当前的硬件配置，以下是推荐设置。")
         
@@ -715,14 +716,112 @@ class HelpWindow(ctk.CTkToplevel):
         else:
              self.add_item_block("Info Unavailable", "信息不可用", "Hardware scan failed.", "无法检测硬件信息。")
 
-        # [功能详解模块]
+        # =======================
+        # Part I: Functional Modules
+        # =======================
         self.add_section_title("I. Functional Modules Detail", "功能模块详解")
+        self.add_desc_text("Cinético is designed to deliver industrial-grade video processing capabilities through minimalist interaction logic.\nCinético 旨在通过极简的交互逻辑提供工业级的视频处理能力。")
+
+        # 1. Core Processing
         self.add_sub_header("1. Core Processing / 核心处理")
-        self.add_item_block("GPU ACCEL", "硬件加速", "Uses NVIDIA NVENC. Max throughput.", "调用 NVIDIA NVENC 专用电路。")
-        self.add_item_block("HYBRID", "异构分流", "Force CPU Decoding + GPU Encoding.", "强制 CPU 解码 + GPU 编码。")
+        self.add_item_block(
+            "Hardware Acceleration / GPU ACCEL", "硬件加速",
+            "Utilizes dedicated NVIDIA NVENC circuits for hardware encoding. Significantly improves throughput and reduces power consumption.",
+            "调用 NVIDIA NVENC 专用电路进行硬件编码。显著提升吞吐量，降低能耗。仅在基准测试或排查兼容性问题时关闭。"
+        )
+        self.add_item_block(
+            "Heterogeneous Offloading / HYBRID", "异构分流",
+            "Force CPU Decoding + GPU Encoding. Optimizes pipeline efficiency during concurrent multi-tasking.",
+            "负载均衡策略。开启后，将强制使用 CPU 解码，使用 GPU 编码。可优化多任务并发流水线效率。"
+        )
+
+        # 2. Codec Standards (Ported from v0.9.6)
+        self.add_sub_header("2. Codec Standards / 编码标准")
+        self.add_item_block(
+            "H.264 (AVC)", "",
+            "Extensive device support. Suitable for cross-platform distribution, client delivery, or playback on legacy hardware.",
+            "广泛的设备支持。适用于跨平台分发、交付客户或在老旧硬件上播放。确保最大的兼容性。"
+        )
+        self.add_item_block(
+            "H.265 (HEVC)", "",
+            "High compression ratio. At equivalent image quality, bitrate is reduced by approximately 50% compared to H.264.",
+            "高压缩比。在同等画质下，比特率较 H.264 降低约 50%。适用于 4K 高分辨率视频的存储与归档。"
+        )
+        self.add_item_block(
+            "AV1", "",
+            "Next-generation open-source coding format with superior compression efficiency. Encoding is slower and requires hardware support for playback.",
+            "新一代开源编码格式，具备更优异的压缩效率。适用于对体积控制有极高要求的场景，编码耗时长，播放端需硬件支持。"
+        )
+
+        # 2.5 Color Depth (Ported from v0.9.6)
+        self.add_separator()
+        self.add_sub_header("2.5 Color Depth / 色彩深度")
+        self.add_item_block(
+            "8-BIT", "Standard / 标准色彩",
+            "16.7 million colors. Standard for web streaming and compatibility.",
+            "1670 万色。网络流媒体与兼容性的标准。建议用于社交媒体分享或老旧设备播放。"
+        )
+        self.add_item_block(
+            "10-BIT", "High Color Depth / 高色深",
+            "1.07 billion colors. Eliminates color banding and improves compression efficiency for gradients.",
+            "10.7 亿色。彻底消除色彩断层，提升渐变色区域压缩效率。建议存档或追求高画质时务必开启。"
+        )
+
+        # 3. Rate Control (Ported from v0.9.6)
+        self.add_sub_header("3. Rate Control & Quality / 码率控制与画质")
+        self.add_desc_text("The quantization strategy adapts automatically based on the hardware selection.\n量化策略根据硬件选择自动适配。")
+        self.add_item_block(
+            "CPU Mode: CRF (Constant Rate Factor)", "基准值: 23",
+            "Allocates bitrate dynamically according to motion complexity. Lower values yield higher quality.\nDefault: 23 (Balanced).",
+            "基于心理视觉模型的恒定速率因子。根据画面运动复杂度动态分配码率。数值越小画质越高。\n默认值：23（平衡点）。"
+        )
+        self.add_item_block(
+            "GPU Mode: CQ (Constant Quantization)", "基准值: 28",
+            "Based on fixed mathematical quantization. Requires higher values to achieve file sizes comparable to CRF.\nDefault: 28 (Equivalent to CRF 23).",
+            "基于固定数学算法的量化参数。由于缺乏深度运动预测，需设定比 CRF 更高的数值以控制体积。\n默认值：28（体积近似 CRF 23）。"
+        )
+
+        # 4. Scheduling (Ported from v0.9.6)
+        self.add_sub_header("4. System Scheduling / 系统调度")
+        self.add_item_block(
+            "Retain Metadata / KEEP DATA", "保留元数据",
+            "Retains original shooting parameters, timestamps, and camera information.",
+            "封装时保留原片的拍摄参数、时间戳及相机信息。"
+        )
+        self.add_item_block(
+            "Process Priority / PRIORITY", "进程优先级",
+            "High: Aggressive scheduling. Allocates maximum CPU time slices to the encoding process.",
+            "High：激进调度。向编码进程分配最大化的 CPU 时间片，加速压制，但可能影响其他应用响应速度。"
+        )
+
+        # =======================
+        # Part II: Core Architecture (Ported from v0.9.6)
+        # =======================
+        self.add_separator()
+        self.add_section_title("II. Core Architecture Analysis", "核心架构解析")
+        self.add_desc_text("Cinético has reconstructed underlying data transmission and resource management.\nCinético 重构底层数据传输与资源管理，突破传统转码工具性能瓶颈。")
+
+        self.add_item_block(
+            "1. Zero-Copy Loopback", "零拷贝环回",
+            "Maps video streams to RAM; the encoder bypasses the conventional file system to acquire data at memory bus speeds.",
+            "将视频流映射至 RAM，编码器绕过常规文件系统，以内存总线速度获取数据，消除机械硬盘的寻道延迟。"
+        )
+
+        self.add_item_block(
+            "2. Adaptive Storage Tiering", "自适应分层存储",
+            "Small files reside in memory for instant reading. Large files are scheduled to SSD cache.",
+            "根据文件体积与硬件环境动态分配缓存策略。小文件驻留内存即时读取，大文件调度至SSD确保读写稳定性。"
+        )
+
+        self.add_item_block(
+            "3. Heuristic VRAM Guard", "显存启发式管理",
+            "Automatically suspends operations when VRAM resources approach the threshold.",
+            "针对高负载场景设计的保护机制。显存资源临近阈值自动挂起，确保极端工况稳定性。"
+        )
 
         ctk.CTkFrame(self.scroll, height=60, fg_color="transparent").pack()
 
+    # --- Helper Methods ---
     def add_separator(self):
         ctk.CTkFrame(self.scroll, height=2, fg_color=self.COL_SEP).pack(fill="x", padx=20, pady=50)
         
@@ -768,15 +867,6 @@ class UltraEncoderApp(DnDWindow):
         try:
             if self.winfo_exists(): func(*args, **kwargs)
         except Exception: pass
-    
-    def preload_help_window(self):
-        """预加载帮助窗口"""
-        try:
-            # [修改] 传入 self.hardware_info
-            self.help_window = HelpWindow(self, info=getattr(self, 'hardware_info', None)) 
-            self.help_window.withdraw()
-            self.help_window.protocol("WM_DELETE_WINDOW", self.hide_help_window)
-        except: pass
 
     def scroll_to_card(self, widget):
         """滚动列表以显示当前处理的卡片"""
@@ -795,6 +885,35 @@ class UltraEncoderApp(DnDWindow):
                     self.after(100, lambda: self.scroll._parent_canvas.yview_moveto(target_pos))
         except: pass
     
+    # [新增] 标题点击计数
+    def on_title_click(self, event):
+        self.title_click_count += 1
+        # 可选：点击时给一点微弱的反馈（例如打印日志或控制台输出）
+        # print(f"Clicks: {self.title_click_count}")
+
+    # [新增] 处理问号按钮点击（彩蛋入口）
+    # [修改] 增加 event=None 默认参数，使其兼容点击绑定和直接调用
+    def handle_help_click(self, event=None):
+        if self.title_click_count >= 10:
+            self.toggle_test_mode()
+            self.title_click_count = 0 
+        else:
+            self.show_help()
+
+    # [新增] 切换测试模式
+    def toggle_test_mode(self):
+        self.test_mode = not self.test_mode
+        if self.test_mode:
+            self.show_toast("已激活：基准测试模式 (不保存文件)", "🧪")
+            self.lbl_main_title.configure(text_color="#E67E22") # 变橙色提示
+            self.btn_action.configure(text="RUN BENCHMARK / 跑分")
+            # 重置统计数据
+            self.test_stats = {"orig": 0, "new": 0}
+        else:
+            self.show_toast("已退出测试模式", "🛡️")
+            self.lbl_main_title.configure(text_color=COLOR_TEXT_MAIN) # 恢复颜色
+            self.btn_action.configure(text="COMPRESS / 压制")
+
     def detect_hardware_limit(self):
         """
         [优化] 启动时检测硬件，返回推荐并发数。
@@ -889,6 +1008,11 @@ class UltraEncoderApp(DnDWindow):
         self.manual_cache_path = None
         self.temp_files = set() 
         self.finished_tasks_count = 0
+
+        # [新增] 测试模式相关变量
+        self.title_click_count = 0     # 标题点击计数
+        self.test_mode = False         # 测试模式开关
+        self.test_stats = {"orig": 0, "new": 0} # 统计数据：原大小、新大小
         
         # [修改] 启动 UI 构建前，先计算推荐并发数
         rec_worker = self.detect_hardware_limit()
@@ -896,9 +1020,6 @@ class UltraEncoderApp(DnDWindow):
         # 启动 UI 构建
         self.setup_ui(default_worker=rec_worker) # 传递参数
         self.finished_tasks_count = 0
-
-        # [修改 1] 启动 UI 构建前，先计算推荐并发数
-        rec_worker = self.detect_hardware_limit()
 
         # 启动本地内存文件流服务器
         self.global_server, self.global_port = start_global_server()
@@ -921,11 +1042,15 @@ class UltraEncoderApp(DnDWindow):
     def preload_help_window(self):
         """预加载帮助窗口，避免第一次点击时卡顿"""
         try:
-            self.help_window = HelpWindow(self) # 创建实例
+            # [修复] 传入 self.hardware_info
+            # 注意：需确保 detect_hardware_limit() 已经在 __init__ 中运行过（当前代码逻辑是先运行的，所以没问题）
+            self.help_window = HelpWindow(self, info=self.hardware_info) 
             self.help_window.withdraw()         # 立即隐藏
             # 劫持关闭事件：当用户点击关闭时，不销毁，而是隐藏
             self.help_window.protocol("WM_DELETE_WINDOW", self.hide_help_window)
-        except: pass
+        except Exception as e: 
+            print(f"Help Window Error: {e}") # 建议加上错误打印，方便调试
+            pass
 
     def hide_help_window(self):
         """隐藏而不是销毁，保留状态"""
@@ -1130,17 +1255,21 @@ class UltraEncoderApp(DnDWindow):
         title_box = ctk.CTkFrame(l_head, fg_color="transparent")
         title_box.pack(fill="x")
         
-        # 标题
-        ctk.CTkLabel(title_box, text="Cinético", font=FONT_TITLE, text_color=COLOR_TEXT_MAIN).pack(side="left")
-        
+        # [修改] 标题部分：将 Label 赋值给 self.lbl_main_title 并绑定点击事件
+        self.lbl_main_title = ctk.CTkLabel(title_box, text="Cinético", font=FONT_TITLE, text_color=COLOR_TEXT_MAIN)
+        self.lbl_main_title.pack(side="left")
+
+        # [新增] 绑定标题点击事件
+        self.lbl_main_title.bind("<ButtonRelease-1>", self.on_title_click)
+
         # [问号按钮]
-        # 使用圆形设计，类似 v0.9.6 的风格
+        # [修改] 问号按钮：修改 command 指向新的逻辑 wrapper
         self.btn_help = ctk.CTkButton(title_box, text="?", width=30, height=30, corner_radius=15, 
                                       font=("Arial", 16, "bold"),
-                                      fg_color="#888888", # 深色圆底
+                                      fg_color="#888888", 
                                       hover_color="#555555",
                                       text_color="#FFFFFF",
-                                      command=self.show_help) # 绑定事件
+                                      command=self.handle_help_click)
         self.btn_help.pack(side="right")
         
         # 缓存按钮 (浅色下背景深一点)
@@ -1178,10 +1307,6 @@ class UltraEncoderApp(DnDWindow):
         self.keep_meta_var = ctk.BooleanVar(value=True)
         self.hybrid_var = ctk.BooleanVar(value=True) 
         self.depth_10bit_var = ctk.BooleanVar(value=False)
-        self.priority_var = ctk.StringVar(value="HIGH / 高优先") 
-        self.worker_var = ctk.StringVar(value="2")
-        self.crf_var = ctk.IntVar(value=28)
-        self.codec_var = ctk.StringVar(value="H.264")
         
         # 开关按钮样式配置
         BTN_OFF_BG = ("#EEEEEE", "#333333") 
@@ -1749,11 +1874,25 @@ class UltraEncoderApp(DnDWindow):
         self.running = False
         if not self.stop_flag:
             self.safe_update(self.launch_fireworks)
-            def set_complete_state():
-                self.btn_action.configure(text="COMPLETED / 已完成", fg_color=COLOR_SUCCESS, hover_color=("#219150", "#27AE60"), state="disabled")
-                self.lbl_run_status.configure(text="✨ All Tasks Finished")
-                self.btn_clear.configure(state="normal") 
-            self.safe_update(set_complete_state)
+            
+            # [新增] 测试模式结果报告
+            if self.test_mode:
+                orig_total = self.test_stats["orig"]
+                new_total = self.test_stats["new"]
+                
+                msg = "测试队列完成！\n\n"
+                msg += f"原视频总大小: {orig_total / (1024**3):.2f} GB\n"
+                msg += f"压制后总大小: {new_total / (1024**3):.2f} GB\n"
+                
+                if orig_total > 0:
+                    ratio = (new_total / orig_total) * 100
+                    save_rate = 100 - ratio
+                    msg += f"\n压缩比: {ratio:.2f}% (节省 {save_rate:.2f}% 空间)"
+                else:
+                    msg += "\n数据异常：原视频大小为0"
+                
+                # 弹窗显示结果
+                self.safe_update(messagebox.showinfo, "基准测试报告", msg)
         else: self.safe_update(self.reset_ui_state)
 
     def _worker_io_task(self, task_file):
@@ -1960,27 +2099,53 @@ class UltraEncoderApp(DnDWindow):
                 try: os.remove(temp_audio_wav)
                 except: pass
             
+            # ... (前略，在 proc.wait() 之后) ...
+            
             # 5. 结果处理
             if self.stop_flag:
                 self.safe_update(card.set_status, "已停止", COLOR_PAUSED, STATE_PENDING)
             elif proc.returncode == 0:
-                self.safe_update(card.set_status, "📦 正在回写...", COLOR_MOVING, STATE_DONE)
-                # 移动临时文件到最终位置
-                if os.path.exists(working_output_file): shutil.move(working_output_file, final_output_path)
-                # 复制元数据
-                if self.keep_meta_var.get() and os.path.exists(final_output_path): shutil.copystat(task_file, final_output_path)
-                
-                card.final_output_path = final_output_path
-                final_size_mb = 0
-                ratio_str = ""
-                try:
-                    final_size_mb = os.path.getsize(final_output_path)
-                    saved_percent = (1.0 - (final_size_mb / input_size)) * 100
-                    ratio_str = f"(-{saved_percent:.1f}%)" if saved_percent >= 0 else f"(+{abs(saved_percent):.1f}%)"
-                except: pass
-                
-                self.safe_update(card.set_status, f"完成 {ratio_str}", COLOR_SUCCESS, STATE_DONE)
-                self.safe_update(card.set_progress, 1.0, COLOR_SUCCESS)
+                # 获取生成的临时文件大小
+                temp_size = 0
+                if os.path.exists(working_output_file):
+                    temp_size = os.path.getsize(working_output_file)
+
+                # [修改] 分支逻辑：测试模式 vs 正常模式
+                if self.test_mode:
+                    # --- 测试模式逻辑 ---
+                    self.safe_update(card.set_status, "🧪 测试完成 (已丢弃)", ("#E67E22", "#E67E22"), STATE_DONE)
+                    self.safe_update(card.set_progress, 1.0, ("#E67E22", "#E67E22"))
+                    
+                    # 记录数据 (加锁防止并发写入冲突)
+                    with self.queue_lock:
+                        self.test_stats["orig"] += input_size
+                        self.test_stats["new"] += temp_size
+                    
+                    # 删除临时文件，不保存
+                    if os.path.exists(working_output_file):
+                        try: os.remove(working_output_file)
+                        except: pass
+                    
+                else:
+                    # --- 原有正常逻辑 ---
+                    self.safe_update(card.set_status, "📦 正在回写...", COLOR_MOVING, STATE_DONE)
+                    # 移动临时文件到最终位置
+                    if os.path.exists(working_output_file): shutil.move(working_output_file, final_output_path)
+                    # 复制元数据
+                    if self.keep_meta_var.get() and os.path.exists(final_output_path): shutil.copystat(task_file, final_output_path)
+                    
+                    # ... (原有的计算压缩率显示的逻辑) ...
+                    final_size_mb = 0
+                    ratio_str = ""
+                    try:
+                        final_size_mb = os.path.getsize(final_output_path)
+                        saved_percent = (1.0 - (final_size_mb / input_size)) * 100
+                        ratio_str = f"(-{saved_percent:.1f}%)" if saved_percent >= 0 else f"(+{abs(saved_percent):.1f}%)"
+                    except: pass
+                    
+                    self.safe_update(card.set_status, f"完成 {ratio_str}", COLOR_SUCCESS, STATE_DONE)
+                    self.safe_update(card.set_progress, 1.0, COLOR_SUCCESS)
+                    
             else:
                 self.safe_update(card.set_status, "转码失败", COLOR_ERROR, STATE_ERROR)
         except Exception as e:
