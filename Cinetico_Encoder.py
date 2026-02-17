@@ -999,88 +999,155 @@ class ModernAlert(ctk.CTkToplevel):
 
 class SplashScreen(ctk.CTkToplevel):
     """
-    [PyArchitect Design v4.1] "Dark Matter" 极简启动页 (稳定版)
-    - 修复：移除未定义的 TkFont 引用，不再进行不稳定的字体检测。
-    - 视觉：保持极深色背景 (#0A0A0A) 与精密排印。
+    [PyArchitect Design v5.0] "HUD Terminal" 工业级启动页
+    - 视觉：非对称构图 + Canvas 绘制 HUD 瞄准框 + 终端滚动日志。
+    - 交互：模拟 BIOS 自检数据流，提升等待期间的观赏性。
     """
     def __init__(self, root_app):
         super().__init__(root_app)
         self.root = root_app
         self.root.withdraw()
 
-        # 1. 窗口基础属性
+        # 1. 窗口属性 (强制置顶 + 无边框)
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         
-        w, h = 540, 320
+        # 宽屏比例，更具电影感
+        w, h = 600, 340
         ws, hs = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f'{w}x{h}+{int((ws-w)/2)}+{int((hs-h)/2)}')
         
-        # 2. 视觉结构 (1px 边框 + 极深背景)
-        border_color = "#2D2D2D"
-        bg_color = "#0A0A0A"
-        text_secondary = "#888888"
+        # 2. 颜色定义
+        self.col_bg = "#0F0F0F"       # 纯黑略带灰
+        self.col_accent = COLOR_ACCENT # 沿用主色调
+        self.col_term = "#444444"     # 终端文字暗色
+        self.col_term_hi = "#AAAAAA"  # 终端文字亮色
 
-        self.configure(fg_color=border_color)
+        self.configure(fg_color=self.col_bg)
         
-        self.inner_frame = ctk.CTkFrame(self, fg_color=bg_color, corner_radius=0)
-        self.inner_frame.pack(fill="both", expand=True, padx=1, pady=1)
+        # 3. 布局：左右分栏
+        # 左侧装饰条 (Accent Bar)
+        self.bar_frame = ctk.CTkFrame(self, width=6, fg_color=self.col_accent, corner_radius=0)
+        self.bar_frame.pack(side="left", fill="y")
+        
+        # 右侧主内容区
+        self.main_area = ctk.CTkFrame(self, fg_color=self.col_bg, corner_radius=0)
+        self.main_area.pack(side="left", fill="both", expand=True, padx=20, pady=20)
+        
+        # --- HUD 装饰 (Canvas 绘图) ---
+        # 我们在主内容区覆盖一个 Canvas 来画线框
+        self.canvas = ctk.CTkCanvas(self.main_area, bg=self.col_bg, highlightthickness=0)
+        self.canvas.place(relx=0, rely=0, relwidth=1, relheight=1)
+        
+        # 绘制 HUD 四角瞄准线
+        self.draw_hud_corners(w-50, h-60) # 减去边距计算
 
-        # 3. UI 元素布局
-        content_frame = ctk.CTkFrame(self.inner_frame, fg_color="transparent")
-        content_frame.pack(expand=True, fill="both", pady=(50, 0))
+        # --- 文字内容层 ---
+        # 标题 (叠加在 Canvas 之上)
+        # 使用 place 绝对定位实现精准排版
+        
+        # 顶部版本号
+        ctk.CTkLabel(self.main_area, text="VER 2.5.0 BUILD_2402", font=("Consolas", 10, "bold"), text_color=self.col_accent).place(x=15, y=10)
+        
+        # 主标题 (巨大)
+        # 如果是 Windows，Impact 字体最有工业感，否则用 Arial Black
+        title_font = ("Impact", 58) if platform.system() == "Windows" else ("Arial", 58, "bold")
+        self.lbl_title = ctk.CTkLabel(self.main_area, text="CINÉTICO", font=title_font, text_color="#FFFFFF")
+        self.lbl_title.place(x=10, y=40)
+        
+        # 副标题 (手动字间距)
+        ctk.CTkLabel(self.main_area, text="E  N  C  O  D  E  R      P  R  O", font=("Segoe UI", 12, "bold"), text_color=self.col_accent).place(x=18, y=110)
 
-        # [关键修复] 直接指定 Windows 标准字体，不再依赖外部库检测
-        # 如果是 Windows，使用 Segoe UI Semibold；如果是 Mac，使用 Arial Bold
-        safe_title_font = ("Segoe UI Semibold", 46) if platform.system() == "Windows" else ("Arial", 46, "bold")
+        # --- 模拟终端日志区 ---
+        self.term_frame = ctk.CTkFrame(self.main_area, fg_color="transparent")
+        self.term_frame.place(x=15, rely=0.6, relwidth=0.9, relheight=0.4)
         
-        ctk.CTkLabel(content_frame, text="CINÉTICO", font=safe_title_font, text_color="#FFFFFF").pack(anchor="s")
-        
-        # 副标题
-        ctk.CTkLabel(content_frame, text="ENCODER PRO", font=("Segoe UI", 12, "bold"), text_color=COLOR_ACCENT).pack(anchor="n", pady=(5, 0))
-        
-        bottom_frame = ctk.CTkFrame(self.inner_frame, fg_color="transparent", height=60)
-        bottom_frame.pack(side="bottom", fill="x")
+        self.logs = []
+        self.lbl_term = ctk.CTkLabel(self.term_frame, text="", font=("Consolas", 9), text_color=self.col_term, anchor="nw", justify="left")
+        self.lbl_term.pack(fill="both", expand=True)
 
-        # 状态文字
-        self.status = ctk.CTkLabel(bottom_frame, text="INITIALIZING SYSTEM...", font=("Consolas", 9), text_color=text_secondary)
-        self.status.pack(side="top", anchor="e", padx=20, pady=(0, 5))
-        
-        # 进度条
-        self.bar = ctk.CTkProgressBar(bottom_frame, width=w, height=2, progress_color=COLOR_ACCENT, fg_color="#1A1A1A", border_width=0, corner_radius=0)
-        self.bar.pack(side="bottom", fill="x")
-        self.bar.set(0)
-        
+        # 底部进度条 (极细)
+        self.prog_bar = ctk.CTkProgressBar(self.main_area, height=2, progress_color=self.col_accent, fg_color="#222222", corner_radius=0)
+        self.prog_bar.place(x=0, rely=0.98, relwidth=1)
+        self.prog_bar.set(0)
+
+        # 强制立即渲染
         self.update()
-        threading.Thread(target=self.run_tasks, daemon=True).start()
+        
+        # 启动后台
+        threading.Thread(target=self.run_boot_sequence, daemon=True).start()
 
-    def update_info(self, text, val):
-        self.status.configure(text=text.upper())
-        self.bar.set(val)
+    def draw_hud_corners(self, w, h):
+        """绘制科技感边角"""
+        c = self.col_accent
+        l = 20 # 线长
+        # 左上
+        self.canvas.create_line(0, 0, l, 0, fill=c, width=2)
+        self.canvas.create_line(0, 0, 0, l, fill=c, width=2)
+        # 右上
+        self.canvas.create_line(w, 0, w-l, 0, fill=c, width=2)
+        self.canvas.create_line(w, 0, w, l, fill=c, width=2)
+        # 左下
+        self.canvas.create_line(0, h, l, h, fill=c, width=2)
+        self.canvas.create_line(0, h, 0, h-l, fill=c, width=2)
+        # 右下
+        self.canvas.create_line(w, h, w-l, h, fill=c, width=2)
+        self.canvas.create_line(w, h, w, h-l, fill=c, width=2)
+        
+        # 装饰性网格线
+        self.canvas.create_line(0, h/2, w, h/2, fill="#222222", width=1, dash=(4, 4))
+
+    def log(self, text, delay=0.05):
+        """添加一行日志并滚动"""
+        timestamp = f"[{time.time() % 100:.2f}]"
+        self.logs.append(f"{timestamp} {text}")
+        if len(self.logs) > 5: self.logs.pop(0) # 只保留最后5行
+        
+        full_text = "\n".join(self.logs)
+        self.lbl_term.configure(text=full_text)
         self.update()
+        time.sleep(delay)
 
-    def run_tasks(self):
+    def run_boot_sequence(self):
+        """模拟 BIOS 启动序列"""
         try:
-            time.sleep(0.2)
+            # 阶段 1: 虚假的快速自检 (制造爽快感)
+            sys_checks = [
+                "CPU_CORES detected...", 
+                "MEM_ALLOC reserved 4096MB...",
+                "GPU_ACCEL check: ENABLED",
+                "LOADING KERNEL MODULES..."
+            ]
+            for msg in sys_checks:
+                self.log(msg, delay=0.02)
             
-            self.update_info("Loading Core Libraries...", 0.3)
-            check_and_install_dependencies()
+            self.prog_bar.set(0.1)
             
-            self.update_info("Verifying Media Engine...", 0.6)
+            # 阶段 2: 真实的业务检查
+            self.log("INIT: Dependency Manager", 0.1)
+            check_and_install_dependencies() # 真实逻辑
+            self.prog_bar.set(0.3)
+            
+            self.log("INIT: FFmpeg Codex Subsystem", 0.2)
+            # 模拟一点计算耗时
             time.sleep(0.1)
+            self.prog_bar.set(0.5)
+
+            self.log("SCAN: Storage IOPS Performance", 0.1)
+            DiskManager.get_windows_drives() # 真实逻辑
+            self.prog_bar.set(0.8)
             
-            self.update_info("Optimizing I/O Subsystem...", 0.8)
-            DiskManager.get_windows_drives()
-            
-            self.update_info("Starting UI...", 0.95)
+            self.log("MOUNT: UI Graphics Engine", 0.2)
             time.sleep(0.2)
-            
-            # 无缝切换
+            self.prog_bar.set(1.0)
+            self.log("SYSTEM READY. LAUNCHING...", 0.3)
+
+            # 切换
             self.root.deiconify()
             self.destroy()
-            
+
         except Exception as e:
-            print(f"Splash Error: {e}")
+            print(f"Boot Error: {e}")
             self.root.deiconify()
             self.destroy()
 
