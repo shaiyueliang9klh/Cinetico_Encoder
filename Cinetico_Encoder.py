@@ -4,7 +4,6 @@ Description: High-performance video compression tool based on FFmpeg and CustomT
              Supports hardware acceleration (NVENC/VideoToolbox), batch processing, 
              and automatic theme adaptation (Light/Dark mode).
 Author: Zheng Qixiang (Optimized by Assistant)
-Version: 2.5.0
 """
 
 import os
@@ -653,6 +652,166 @@ class TaskCard(ctk.CTkFrame):
         self.ui_max_progress = 0.0
 
 # =========================================================================
+# [Module 3.5] Help Window (Ported from v0.9.6)
+# [修复版] 已适配 Light/Dark 双色模式
+# =========================================================================
+class HelpWindow(ctk.CTkToplevel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.geometry("1150x900") 
+        self.title("Cinético - Technical Guide")
+        self.lift()
+        self.focus_force()
+        
+        # --- 字体配置 ---
+        self.FONT_H1 = ("Segoe UI", 34, "bold") if platform.system() == "Windows" else ("Arial", 34, "bold")    
+        self.FONT_H2 = ("微软雅黑", 18)              
+        self.FONT_SEC = ("Segoe UI", 22, "bold")     
+        self.FONT_SEC_CN = ("微软雅黑", 16, "bold")  
+        self.FONT_ITEM = ("Segoe UI", 16, "bold")    
+        self.FONT_BODY_EN = ("Segoe UI", 13)         
+        self.FONT_BODY_CN = ("微软雅黑", 13)         
+        
+        # --- [修复核心] 颜色配置 (浅色模式, 深色模式) ---
+        # 现在它们是元组了，CTK 会自动根据当前模式选择颜色
+        self.COL_BG = ("#F3F3F3", "#121212")        # 背景: 浅灰 / 深黑
+        self.COL_CARD = ("#FFFFFF", "#1E1E1E")      # 卡片: 纯白 / 深灰
+        self.COL_TEXT_HI = ("#333333", "#FFFFFF")   # 标题: 深黑 / 纯白
+        self.COL_TEXT_MED = ("#555555", "#CCCCCC")  # 正文: 深灰 / 浅灰
+        self.COL_TEXT_LOW = ("#888888", "#888888")  # 弱文: 灰色 / 灰色
+        self.COL_ACCENT = ("#3B8ED0", "#3B8ED0")    # 强调: 蓝色 (保持一致)
+        self.COL_SEP = ("#E0E0E0", "#333333")       # 分割线: 浅灰 / 深灰
+
+        self.configure(fg_color=self.COL_BG)
+
+        # --- 顶部标题区 ---
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=50, pady=(45, 25))
+        
+        ctk.CTkLabel(header, text="Cinético Technical Overview", 
+                     font=self.FONT_H1, text_color=self.COL_TEXT_HI, anchor="w").pack(fill="x")
+        ctk.CTkLabel(header, text="Cinético 技术概览与操作指南 (v2.5.0)", 
+                     font=self.FONT_H2, text_color=self.COL_TEXT_LOW, anchor="w").pack(fill="x", pady=(8, 0))
+
+        # --- 滚动内容区 ---
+        self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.scroll.pack(fill="both", expand=True, padx=30, pady=(0, 30))
+
+        # [智能硬件建议模块]
+        self.add_section_title("0. Smart Optimization Guide", "智能并发设置建议")
+        self.add_desc_text("Based on your current hardware configuration.\n根据您当前的硬件配置，以下是防止卡顿并最大化效率的推荐设置。")
+        
+        # 获取建议
+        cpu_advice, gpu_advice = self.get_hardware_advice()
+        
+        self.add_item_block(
+            "CPU Encoding Mode", "CPU 纯软解压制",
+            f"Strategy for multi-core processors.\n{cpu_advice['en']}",
+            f"针对多核处理器的策略。\n建议：{cpu_advice['cn']}"
+        )
+        self.add_item_block(
+            "GPU Acceleration Mode", "硬件加速压制",
+            f"Based on NVENC availability.\n{gpu_advice['en']}",
+            f"基于 NVENC 可用性。\n建议：{gpu_advice['cn']}"
+        )
+
+        # [功能详解模块]
+        self.add_section_title("I. Functional Modules Detail", "功能模块详解")
+        
+        self.add_sub_header("1. Core Processing / 核心处理")
+        self.add_item_block("GPU ACCEL", "硬件加速", "Uses NVIDIA NVENC. Max throughput.", "调用 NVIDIA NVENC 专用电路。显著提升吞吐量。")
+        self.add_item_block("HYBRID", "异构分流", "Force CPU Decoding + GPU Encoding.", "强制 CPU 解码 + GPU 编码，平衡负载。")
+
+        self.add_sub_header("2. Codec Standards / 编码标准")
+        self.add_item_block("H.264 (AVC)", "", "Max compatibility.", "广泛支持，兼容性最好。")
+        self.add_item_block("H.265 (HEVC)", "", "High compression ratio (50% less size).", "高压缩比，同画质体积减半。")
+        self.add_item_block("AV1", "", "Next-gen format. Extreme compression.", "新一代格式，极限压缩率，需硬件支持。")
+
+        self.add_separator()
+        self.add_sub_header("2.5 Color Depth / 色彩深度")
+        self.add_item_block("8-BIT", "Standard", "16.7M colors. Standard compatibility.", "1670万色，标准兼容性。")
+        self.add_item_block("10-BIT", "High Color", "1.07B colors. No color banding.", "10.7亿色，消除色彩断层 (推荐存档使用)。")
+
+        self.add_sub_header("3. Quality Control / 画质控制")
+        self.add_item_block("CRF (CPU)", "Constant Rate Factor", "Dynamic bitrate based on complexity.\nRange: 18-28 (Lower is better).", "基于画面复杂度的动态码率。\n范围: 18-28 (数值越小画质越好)。")
+        self.add_item_block("CQ (GPU)", "Constant Quantization", "Fixed quantization step.\nRange: 20-30 (Requires higher value than CRF).", "固定量化参数。\n范围: 20-30 (需设定比 CRF 更大的数值)。")
+
+        # [核心架构解析]
+        self.add_separator()
+        self.add_section_title("II. Core Architecture", "核心架构解析")
+        self.add_item_block("1. Zero-Copy Loopback", "零拷贝环回", "Maps video streams to RAM to bypass disk IO latency.", "将视频流映射至 RAM，绕过机械硬盘寻道延迟。")
+        self.add_item_block("2. Adaptive Storage", "自适应分层存储", "Small files -> RAM. Large files -> SSD Cache.", "小文件驻留内存，大文件调度至 SSD。")
+
+        ctk.CTkFrame(self.scroll, height=60, fg_color="transparent").pack()
+
+    def get_hardware_advice(self):
+        # 移植自 0.9.6 的智能检测逻辑 (无需修改)
+        try: cpu_count = os.cpu_count() or 4
+        except: cpu_count = 4
+            
+        if cpu_count >= 16:
+            rec_cpu = 3 
+            cpu_msg_en = f"Detected {cpu_count} threads. Recommendation: [3] tasks to prevent cache thrashing."
+            cpu_msg_cn = f"检测到 {cpu_count} 线程。推荐：[3] 个并发 (防止资源争抢)。"
+        elif cpu_count >= 8:
+            rec_cpu = 2
+            cpu_msg_en = f"Detected {cpu_count} threads. Recommendation: [2] tasks."
+            cpu_msg_cn = f"检测到 {cpu_count} 线程。推荐：[2] 个并发 (平衡点)。"
+        else:
+            rec_cpu = 1
+            cpu_msg_en = "Basic CPU detected. Recommendation: [1] task."
+            cpu_msg_cn = "CPU 性能有限。推荐：[1] 个并发 (保稳定)。"
+
+        gpu_name = "Unknown"
+        is_dual_nvenc = False
+        try:
+            if platform.system() == "Windows":
+                cmd = ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]
+                si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                gpu_name = subprocess.check_output(cmd, startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW, encoding="utf-8").strip()
+                if any(x in gpu_name.upper() for x in ["4090", "4080", "TITAN", "A6000", "A100"]):
+                    is_dual_nvenc = True
+        except: pass
+        
+        if is_dual_nvenc:
+            gpu_msg_en = f"Dual-NVENC Card ({gpu_name}). Rec: [3] or [4]."
+            gpu_msg_cn = f"双编码芯片显卡 ({gpu_name})。推荐：[3] 或 [4]。"
+        else:
+            gpu_msg_en = f"Single-NVENC Card ({gpu_name}). Rec: [2]."
+            gpu_msg_cn = f"单编码芯片显卡 ({gpu_name})。推荐：[2]。"
+
+        return {"en": cpu_msg_en, "cn": cpu_msg_cn}, {"en": gpu_msg_en, "cn": gpu_msg_cn}
+
+    # [修复] 使用双色变量 self.COL_SEP
+    def add_separator(self):
+        ctk.CTkFrame(self.scroll, height=2, fg_color=self.COL_SEP).pack(fill="x", padx=20, pady=50)
+        
+    def add_section_title(self, text_en, text_cn):
+        f = ctk.CTkFrame(self.scroll, fg_color="transparent")
+        f.pack(fill="x", padx=20, pady=(35, 15))
+        ctk.CTkFrame(f, width=5, height=28, fg_color=self.COL_ACCENT).pack(side="left", padx=(0, 15))
+        ctk.CTkLabel(f, text=text_en, font=self.FONT_SEC, text_color=self.COL_TEXT_HI).pack(side="left", anchor="sw")
+        ctk.CTkLabel(f, text=f"  {text_cn}", font=self.FONT_SEC_CN, text_color=self.COL_TEXT_LOW).pack(side="left", anchor="sw", pady=(3,0))
+        
+    def add_sub_header(self, text):
+        ctk.CTkLabel(self.scroll, text=text, font=self.FONT_SEC_CN, text_color=self.COL_TEXT_HI, anchor="w").pack(fill="x", padx=40, pady=(30, 12))
+        
+    def add_desc_text(self, text):
+        ctk.CTkLabel(self.scroll, text=text, font=self.FONT_BODY_EN, text_color=self.COL_TEXT_MED, justify="left", anchor="w").pack(fill="x", padx=40, pady=(0, 20))
+        
+    def add_item_block(self, title_en, title_cn, body_en, body_cn):
+        card = ctk.CTkFrame(self.scroll, fg_color=self.COL_CARD, corner_radius=8)
+        card.pack(fill="x", padx=20, pady=10)
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="both", padx=25, pady=20)
+        title_box = ctk.CTkFrame(inner, fg_color="transparent")
+        title_box.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(title_box, text=title_en, font=self.FONT_ITEM, text_color=self.COL_TEXT_HI).pack(side="left")
+        if title_cn: ctk.CTkLabel(title_box, text=f"  {title_cn}", font=self.FONT_ITEM, text_color=self.COL_ACCENT).pack(side="left")
+        ctk.CTkLabel(inner, text=body_en, font=self.FONT_BODY_EN, text_color=self.COL_TEXT_MED, justify="left", anchor="w", wraplength=950).pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(inner, text=body_cn, font=self.FONT_BODY_CN, text_color=self.COL_TEXT_LOW, justify="left", anchor="w", wraplength=950).pack(fill="x")
+
+# =========================================================================
 # [Module 4] Main Application
 # 功能：核心业务逻辑控制器
 # =========================================================================
@@ -733,6 +892,33 @@ class UltraEncoderApp(DnDWindow):
         if HAS_DND:
             self.drop_target_register(DND_FILES)
             self.dnd_bind('<<Drop>>', self.drop_file)
+
+        # 启动时在后台静默加载帮助窗口
+        self.after(200, self.preload_help_window)
+
+    # --- 帮助窗口逻辑 (移植自 v0.9.6) ---
+    def preload_help_window(self):
+        """预加载帮助窗口，避免第一次点击时卡顿"""
+        try:
+            self.help_window = HelpWindow(self) # 创建实例
+            self.help_window.withdraw()         # 立即隐藏
+            # 劫持关闭事件：当用户点击关闭时，不销毁，而是隐藏
+            self.help_window.protocol("WM_DELETE_WINDOW", self.hide_help_window)
+        except: pass
+
+    def hide_help_window(self):
+        """隐藏而不是销毁，保留状态"""
+        self.help_window.withdraw()
+
+    def show_help(self):
+        """显示帮助窗口"""
+        # 如果窗口还没创建（比如刚启动还没来得及预加载），就现做
+        if not hasattr(self, "help_window") or not self.help_window.winfo_exists():
+            self.preload_help_window()
+        
+        # 显示并置顶
+        self.help_window.deiconify()
+        self.help_window.lift()
 
     def show_toast(self, message, icon="✨"):
         if hasattr(self, "current_toast") and self.current_toast.winfo_exists():
@@ -913,7 +1099,23 @@ class UltraEncoderApp(DnDWindow):
         # 标题区域
         l_head = ctk.CTkFrame(left, fg_color="transparent")
         l_head.pack(fill="x", padx=UNIFIED_PAD_X, pady=(20, 5))
-        ctk.CTkLabel(l_head, text="Cinético", font=FONT_TITLE, text_color=COLOR_TEXT_MAIN).pack(side="left")
+        
+        # 使用容器来包裹标题和按钮，确保对齐
+        title_box = ctk.CTkFrame(l_head, fg_color="transparent")
+        title_box.pack(fill="x")
+        
+        # 标题
+        ctk.CTkLabel(title_box, text="Cinético", font=FONT_TITLE, text_color=COLOR_TEXT_MAIN).pack(side="left")
+        
+        # [问号按钮]
+        # 使用圆形设计，类似 v0.9.6 的风格
+        self.btn_help = ctk.CTkButton(title_box, text="?", width=30, height=30, corner_radius=15, 
+                                      font=("Arial", 16, "bold"),
+                                      fg_color="#888888", # 深色圆底
+                                      hover_color="#555555",
+                                      text_color="#FFFFFF",
+                                      command=self.show_help) # 绑定事件
+        self.btn_help.pack(side="right")
         
         # 缓存按钮 (浅色下背景深一点)
         btn_cache_bg = ("#E0E0E0", "#252525")
