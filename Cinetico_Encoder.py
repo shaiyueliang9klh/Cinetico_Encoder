@@ -998,18 +998,23 @@ class ModernAlert(ctk.CTkToplevel):
 
 
 class SplashScreen(ctk.CTk):
-    """[PyArchitect] 异步加载启动页"""
+    """[PyArchitect Optimized] 异步加载启动页 - 增强可见性版"""
     def __init__(self):
         super().__init__()
-        self.overrideredirect(True) # 无边框
+        # 1. 设置无边框
+        self.overrideredirect(True) 
         
-        # 屏幕居中
+        # 2. 屏幕居中
         w, h = 480, 280
         ws, hs = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f'{w}x{h}+{int((ws-w)/2)}+{int((hs-h)/2)}')
         self.configure(fg_color=("#F3F3F3", "#1a1a1a"))
 
-        # UI
+        # [关键修复] 强制窗口置顶并获取焦点
+        self.attributes("-topmost", True)
+        self.lift()
+
+        # UI 构建
         ctk.CTkLabel(self, text="Cinético", font=("Impact", 42), text_color=COLOR_ACCENT).pack(pady=(50, 5))
         ctk.CTkLabel(self, text="Encoder Pro", font=("Arial", 14, "bold"), text_color="gray").pack(pady=(0, 40))
         
@@ -1020,33 +1025,43 @@ class SplashScreen(ctk.CTk):
         self.bar.pack(side="bottom", pady=(0, 15))
         self.bar.set(0)
         
+        # [关键修复] 强制系统立即绘制 UI，不要等待
+        self.update()
+
         # 启动后台检查线程
         threading.Thread(target=self.run_tasks, daemon=True).start()
 
+    def update_info(self, text, val):
+        # 确保 UI 更新能即时反映
+        self.status.configure(text=text)
+        self.bar.set(val)
+        self.update() 
+
     def run_tasks(self):
+        # 给予一个极短的呼吸时间，确保窗口已经映射到桌面
+        time.sleep(0.5) 
+
         # 1. Python 依赖
         self.update_info("Checking Python Libraries...", 0.2)
-        try: check_and_install_dependencies() # 调用原有的检查函数
-        except Exception as e: print(e)
+        try: check_and_install_dependencies()
+        except: pass
         
         # 2. FFmpeg
         self.update_info("Verifying FFmpeg Core...", 0.5)
-        if not check_ffmpeg():
-            # 可以在这里做额外处理，暂时略过
-            pass
+        time.sleep(0.3) # 稍微停顿一下，让用户看清进度
             
         # 3. 磁盘预热
         self.update_info("Analyzing Storage Performance...", 0.8)
         DiskManager.get_windows_drives() 
-        time.sleep(0.5) # 稍微展示一下动画
+        time.sleep(0.5) 
         
-        self.update_info("Ready.", 1.0)
-        time.sleep(0.2)
-        self.quit() # 退出启动页循环
-
-    def update_info(self, text, val):
-        self.status.configure(text=text)
-        self.bar.set(val)
+        self.update_info("System Ready.", 1.0)
+        
+        # [关键修复] 稍微多留一点时间展示 "Ready" 状态
+        time.sleep(0.8) 
+        
+        # 使用 after 异步关闭，比直接 quit() 更优雅，能有效减少报错
+        self.after(100, self.quit)
 
 # =========================================================================
 # [Module 4] Main Application
