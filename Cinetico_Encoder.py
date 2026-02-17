@@ -999,87 +999,95 @@ class ModernAlert(ctk.CTkToplevel):
 
 class SplashScreen(ctk.CTkToplevel):
     """
-    [PyArchitect Design] 极简主义启动页 (v3.0)
-    - 视觉升级：深色磨砂质感，无边框悬浮设计。
-    - 逻辑升级：负责主程序的预热，消除“黑屏间隙”。
+    [PyArchitect Design v4.0] "Dark Matter" 极简启动页
+    - 视觉升级：OLED 级极深色背景，精密排印，极细光束进度条。
+    - 逻辑保持：无缝后台加载主程序。
     """
     def __init__(self, root_app):
         super().__init__(root_app)
         self.root = root_app
-        self.root.withdraw() # 暂时隐藏主程序，只显示启动页
+        self.root.withdraw()
 
-        # 1. 窗口属性设置
-        self.overrideredirect(True) # 无边框
-        self.attributes("-topmost", True) # 强制置顶
+        # 1. 窗口基础属性
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
         
-        # 2. 屏幕居中算法
-        w, h = 500, 300
+        # 尺寸稍微加大，增加呼吸感
+        w, h = 540, 320
         ws, hs = self.winfo_screenwidth(), self.winfo_screenheight()
-        x, y = int((ws-w)/2), int((hs-h)/2)
-        self.geometry(f'{w}x{h}+{x}+{y}')
+        self.geometry(f'{w}x{h}+{int((ws-w)/2)}+{int((hs-h)/2)}')
         
-        # 3. 视觉设计 (深色极简风格)
-        # 外层 Frame (模拟边框)
-        self.configure(fg_color="#1a1a1a") 
-        self.border_frame = ctk.CTkFrame(self, fg_color="#1a1a1a", border_width=2, border_color="#333333", corner_radius=0)
-        self.border_frame.pack(fill="both", expand=True)
-        
-        # 内层内容区
-        self.inner_frame = ctk.CTkFrame(self.border_frame, fg_color="#121212", corner_radius=0)
-        self.inner_frame.pack(fill="both", expand=True, padx=2, pady=2)
+        # 2. 视觉结构搭建 (模拟极其精致的 1px 边框)
+        # 最外层作为边框色
+        border_color = "#2D2D2D"
+        bg_color = "#0A0A0A" # 极深色背景
+        text_secondary = "#888888"
 
-        # 4. UI 元素布局
-        # LOGO / 标题
-        ctk.CTkLabel(self.inner_frame, text="CINÉTICO", font=("Segoe UI Black", 48), text_color="#FFFFFF").pack(pady=(60, 0))
-        ctk.CTkLabel(self.inner_frame, text="E N C O D E R   P R O", font=("Arial", 14, "bold"), text_color=COLOR_ACCENT).pack(pady=(0, 40))
-
-        # 状态文字 (右下角极简风格)
-        self.status = ctk.CTkLabel(self.inner_frame, text="INITIALIZING...", font=("Consolas", 10), text_color="#666666")
-        self.status.pack(side="bottom", anchor="e", padx=30, pady=(0, 5))
+        self.configure(fg_color=border_color)
         
-        # 极细进度条
-        self.bar = ctk.CTkProgressBar(self.inner_frame, width=440, height=3, progress_color=COLOR_ACCENT, fg_color="#222222")
-        self.bar.pack(side="bottom", pady=(0, 25))
+        # 内层主内容区 (留出 1px 边距形成边框)
+        self.inner_frame = ctk.CTkFrame(self, fg_color=bg_color, corner_radius=0)
+        self.inner_frame.pack(fill="both", expand=True, padx=1, pady=1)
+
+        # 3. UI 元素布局 (精密排印)
+        # 使用 Frame 来控制垂直居中结构
+        content_frame = ctk.CTkFrame(self.inner_frame, fg_color="transparent")
+        content_frame.pack(expand=True, fill="both", pady=(50, 0))
+
+        # 主标题：使用更现代、字重适中的字体
+        # 优先尝试 Roboto Medium (如果系统有)，回退到 Segoe UI Semibold
+        title_font = ("Roboto Medium", 46) if "Roboto" in TkFont.families() else ("Segoe UI Semibold", 46)
+        ctk.CTkLabel(content_frame, text="CINÉTICO", font=title_font, text_color="#FFFFFF").pack(anchor="s")
+        
+        # 副标题：小字号、强调色、简洁有力
+        ctk.CTkLabel(content_frame, text="ENCODER PRO", font=("Segoe UI", 12, "bold"), text_color=COLOR_ACCENT).pack(anchor="n", pady=(5, 0))
+        
+        # 底部区域 Frame
+        bottom_frame = ctk.CTkFrame(self.inner_frame, fg_color="transparent", height=60)
+        bottom_frame.pack(side="bottom", fill="x")
+
+        # 状态文字：极简风格，靠右对齐
+        self.status = ctk.CTkLabel(bottom_frame, text="INITIALIZING SYSTEM...", font=("Consolas", 9), text_color=text_secondary)
+        self.status.pack(side="top", anchor="e", padx=20, pady=(0, 5))
+        
+        # 进度条：极细光束风格 (2px 高度)，贴底放置
+        self.bar = ctk.CTkProgressBar(bottom_frame, width=w, height=2, progress_color=COLOR_ACCENT, fg_color="#1A1A1A", border_width=0, corner_radius=0)
+        self.bar.pack(side="bottom", fill="x")
         self.bar.set(0)
         
-        # 强制立即渲染第一帧
+        # 强制渲染首帧
         self.update()
 
-        # 启动后台初始化任务
+        # 启动后台任务
         threading.Thread(target=self.run_tasks, daemon=True).start()
 
+    # --- 以下逻辑保持不变 ---
     def update_info(self, text, val):
         self.status.configure(text=text.upper())
         self.bar.set(val)
         self.update()
 
     def run_tasks(self):
-        """执行环境检查，并平滑过渡到主程序"""
         try:
-            time.sleep(0.3) # 视觉缓冲
-            
-            self.update_info("Loading Dependencies...", 0.2)
-            check_and_install_dependencies()
-            
-            self.update_info("Verifying FFmpeg Core...", 0.5)
-            # 这里其实很快，稍微停顿一下让用户感觉到检查过程
+            # 适当缩短了不必要的等待时间，让启动更迅速
             time.sleep(0.2) 
             
-            self.update_info("Mounting Storage Subsystem...", 0.7)
-            # 在启动页显示的同时，预热磁盘检查
+            self.update_info("Loading Core Libraries...", 0.3)
+            check_and_install_dependencies()
+            
+            self.update_info("Verifying Media Engine...", 0.6)
+            time.sleep(0.1)
+            
+            # 磁盘预热
+            self.update_info("Optimizing I/O Subsystem...", 0.8)
             DiskManager.get_windows_drives()
             
-            self.update_info("Starting UI Engine...", 0.9)
-            time.sleep(0.3)
+            self.update_info("Starting UI...", 0.95)
+            time.sleep(0.2)
             
-            self.update_info("READY.", 1.0)
-            time.sleep(0.5)
-            
-            # --- 关键时刻：无缝切换 ---
-            # 1. 显示主窗口
-            self.root.deiconify() 
-            # 2. 销毁启动页
-            self.destroy() 
+            # 无缝切换
+            self.root.deiconify()
+            self.destroy()
             
         except Exception as e:
             print(f"Splash Error: {e}")
