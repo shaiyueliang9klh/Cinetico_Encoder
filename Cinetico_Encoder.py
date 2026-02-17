@@ -289,70 +289,177 @@ from typing import Optional
 # 磁盘类型缓存（避免重复调用耗时的 Win32 API）
 drive_type_cache: dict[str, bool] = {}
 
-# [PyArchitect Refactor] 智能硬盘管理系统
+import subprocess
+import json
+from typing import Dict, List, Tuple, Optional
+
+# [PyArchitect Refactor] 智能硬盘管理系统 (v2.0)
 class DiskManager:
-    @staticmethod
-    def is_ssd(path: str) -> bool:
-        """集成原有的 SSD 检测逻辑"""
-        if platform.system() != "Windows": return True
+    """
+    负责磁盘性能评估与缓存路径选择的管理器。
+    
+    Arch Note:
+    采用了 PowerShell 子进程调用来获取准确的 MediaType (SSD/HDD)。
+    权重算法经过重新设计，优先保证 IO 性能而非存储容量。
+    """
+    
+    # 静态缓存，避免重复执行昂贵的 subprocess 操作
+    _type_cache: Dict[str, bool] = {} 
+
+    @classmethod
+    def is_ssd(cls, path: str) -> bool:
+        """
+        准确判断指定路径所在的磁盘是否为固态硬盘 (Windows Only)。
+        
+        Implementation:
+        使用 PowerShell 的 Get-Partition 和 Get-Disk 管道命令获取 MediaType。
+        
+        Args:
+            path: 文件路径或盘符 (e.g., "C:\\", "D:/Videos")
+            
+        Returns:
+            bool: True if SSD/NVMe, False if HDD or check failed.
+        """
+        if platform.system() != "Windows":
+            return True # 非 Windows 系统默认视为高速盘 (Mac/Linux 通常无需此检测)
+
         try:
             drive_letter = os.path.splitdrive(os.path.abspath(path))[0].upper()
-            # 这里复用你原有的 ctypes 逻辑，为节省篇幅，核心检测代码保持不变
-            # 建议将原 DiskManager.is_ssd 的核心 try...except 块搬进来
-            # 如果为了简化，这里暂时返回 True，请务必保留原有的 DeviceIoControl 代码
-            return True 
-        except: return False
+            if not drive_letter: 
+                return False
+                
+            # 检查缓存命中
+            if drive_letter in cls._type_cache:
+                return cls._type_cache[drive_letter]
+
+            # [关键优化] 使用 PowerShell 获取物理磁盘类型
+            # Unspecified 通常出现在虚拟磁盘或某些 RAID 阵列中，我们保守对待
+            cmd = f'Get-Partition -DriveLetter {drive_letter[0]} | Get-Disk | Select-Object -ExpandProperty MediaType'
+            
+            # 使用 shell=True 隐藏窗口 (配合 startupinfo)
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+            result = subprocess.check_output(
+                ["powershell", "-Command", cmd], 
+                startupinfo=startupinfo,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            ).decode().strip().upper()
+            
+            is_ssd_drive = "SSD" in result
+            cls._type_cache[drive_letter] = is_ssd_drive
+            
+            # Debug Log (仅首次检测时输出)
+            print(f"[DiskManager] Detected {drive_letter} Type: {result} -> SSD={is_ssd_drive}")
+            return is_ssd_drive
+            
+        except Exception as e:
+            print(f"[DiskManager] Check failed for {path}: {e}")
+            return False # 异常情况下保守判定为 HDD
 
     @staticmethod
-    def get_windows_drives():
+    def get_windows_drives() -> List[str]:
+        """获取 Windows 所有可用盘符"""
         drives = []
         if platform.system() == "Windows":
-            bitmask = ctypes.windll.kernel32.GetLogicalDrives()
-            for letter in string.ascii_uppercase:
-                if bitmask & 1: drives.append(f"{letter}:\\")
-                bitmask >>= 1
+            try:
+                bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+                for letter in string.ascii_uppercase:
+                    if bitmask & 1:
+                        drives.append(f"{letter}:\\")
+                    bitmask >>= 1
+            except Exception:
+                pass
         return drives
 
-    @staticmethod
-    def get_best_cache_path(source_file=None):
+    @classmethod
+    def get_best_cache_path(cls, source_file: Optional[str] = None) -> str:
         """
-        [算法] 硬盘评分系统：
-        基础分 0
-        +100: 是 SSD
-        +1/GB: 剩余空间加权
-        -50:  是系统盘 (C:)
-        -100: 是源文件所在盘 (避免 IO 冲突)
-        -1000: 剩余空间 < 20GB (直接淘汰)
-        """
-        if platform.system() != "Windows": return os.path.expanduser("~/")
+        [算法 v2.0] 硬盘评分系统 (PyArchitect Optimized)：
         
-        candidates = []
-        src_drive = os.path.splitdrive(os.path.abspath(source_file))[0].upper() if source_file else ""
+        策略核心：IOPS (速度) > Capacity (容量)。
+        只要是 SSD，且空间足够 (>20GB)，绝对优先于任何 HDD。
+        
+        Scoring Rules:
+        ------------------------------------------------------------
+        Baseline: 0
+        Is SSD:   +10,000,000 (VIP Pass: 确保 SSD 永远胜出)
+        Capacity: +1 per GB   (在同类介质中，选空间大的)
+        SysDrive: -500        (C盘适度降权，防止占满系统盘)
+        SrcDrive: -1,000      (避免与源文件抢 IO，分散读写压力)
+        Penalty:  Remaining < 20GB -> 直接淘汰 (Score = -Inf)
+        ------------------------------------------------------------
+        """
+        if platform.system() != "Windows": 
+            return os.path.expanduser("~/")
+        
+        candidates: List[Tuple[int, str]] = []
+        
+        # 获取源文件所在盘符
+        src_drive = ""
+        if source_file:
+            src_drive = os.path.splitdrive(os.path.abspath(source_file))[0].upper()
+            
         sys_drive = os.getenv("SystemDrive", "C:").upper()
 
-        for drive in DiskManager.get_windows_drives():
+        print("-" * 40)
+        print("[DiskManager] 开始智能选盘评估...")
+
+        for drive in cls.get_windows_drives():
             try:
-                # 获取剩余空间
+                # 1. 获取剩余空间 (GB)
                 free_bytes = ctypes.c_ulonglong(0)
-                ctypes.windll.kernel32.GetDiskFreeSpaceExW(ctypes.c_wchar_p(drive), None, None, ctypes.pointer(free_bytes))
+                ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                    ctypes.c_wchar_p(drive), None, None, ctypes.pointer(free_bytes)
+                )
                 free_gb = free_bytes.value / (1024**3)
                 
-                if free_gb < 20: continue # 空间不足直接跳过
+                # [熔断机制] 空间过小直接跳过
+                if free_gb < 20: 
+                    continue 
 
                 score = 0
-                if DiskManager.is_ssd(drive): score += 100
-                if drive.startswith(sys_drive): score -= 50
-                if src_drive and drive.startswith(src_drive): score -= 100
-                score += int(free_gb / 10) # 每10GB加1分
+                drive_pure = drive.split(":")[0] + ":" # 确保格式为 C:
 
+                # 2. 核心判定：是否为 SSD
+                is_ssd_device = cls.is_ssd(drive)
+                
+                # 3. 计分逻辑
+                if is_ssd_device:
+                    score += 10_000_000  # 给予无法被 HDD 容量超越的巨大权重
+                
+                # 空间分 (辅助决策)
+                score += int(free_gb) 
+
+                # 惩罚项
+                if drive_pure == sys_drive:
+                    score -= 500         # 轻微惩罚系统盘
+                
+                if src_drive and drive.startswith(src_drive):
+                    score -= 1_000       # 惩罚源文件所在盘 (IO 冲突)
+
+                print(f"  > Drive {drive} | Type: {'SSD' if is_ssd_device else 'HDD'} | Free: {free_gb:.1f}GB | Score: {score}")
                 candidates.append((score, drive))
-            except: pass
+                
+            except Exception as e:
+                print(f"  > Drive {drive} Check Error: {e}")
+                pass
         
-        if not candidates: return "C:\\"
+        print("-" * 40)
+
+        # 兜底逻辑：如果没有候选盘，返回 C 盘
+        if not candidates: 
+            return "C:\\"
+            
         # 按分数降序排列
         candidates.sort(key=lambda x: x[0], reverse=True)
         best_drive = candidates[0][1]
-        print(f"[DiskManager] Best Cache Drive: {best_drive} (Score: {candidates[0][0]})")
+        best_score = candidates[0][0]
+        
+        is_ssd_final = cls.is_ssd(best_drive)
+        type_str = "SSD/NVMe" if is_ssd_final else "HDD/Mech"
+        
+        print(f"[DiskManager] 最终选择: {best_drive} ({type_str}) | Final Score: {best_score}")
         return best_drive
 
 # --- 全局内存文件服务器 ---
