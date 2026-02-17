@@ -999,8 +999,8 @@ class ModernAlert(ctk.CTkToplevel):
 
 class SplashScreen(ctk.CTkToplevel):
     """
-    [PyArchitect Design v6.0] "Ghost Console" 极客启动页
-    - 修复：解决 Canvas 颜色元组报错问题。
+    [PyArchitect Design v6.1] "Ghost Console" 极客启动页 (修复版)
+    - 修复：遵守 CustomTkinter 的 place 布局规则，解决 height 参数报错。
     - 视觉：ComfyUI 风格，背景为实时滚动的低对比度日志流。
     - 交互：Logo 悬浮于日志流之上，硬核工业感。
     """
@@ -1013,7 +1013,7 @@ class SplashScreen(ctk.CTkToplevel):
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         
-        w, h = 680, 400 # 稍微加大尺寸，容纳更多日志
+        w, h = 680, 400
         ws, hs = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f'{w}x{h}+{int((ws-w)/2)}+{int((hs-h)/2)}')
         
@@ -1021,37 +1021,50 @@ class SplashScreen(ctk.CTkToplevel):
         self.bg_color = "#0B0B0B"
         self.configure(fg_color=self.bg_color)
         
-        # [关键修复] 解析颜色元组，只取当前模式颜色（防止 invalid color name 报错）
-        # 这里直接取 index 1 (Dark Mode 颜色)，因为启动页是强制深色的
+        # [关键逻辑] 解析颜色元组，只取当前模式颜色
         raw_accent = COLOR_ACCENT
         self.accent_color = raw_accent[1] if isinstance(raw_accent, tuple) else raw_accent
 
         # --- 层级 1: 背景日志流 (The Ghost Console) ---
-        # 使用 Textbox 模拟终端，低对比度灰色字体
         self.console = ctk.CTkTextbox(
             self, 
             fg_color="transparent", 
-            text_color="#333333", # 很暗的灰色，作为背景纹理
+            text_color="#333333", # 极暗的灰色，作为背景纹理
             font=("Consolas", 10),
-            state="disabled",     # 禁止用户输入
+            state="disabled",
             activate_scrollbars=False
         )
         self.console.place(relx=0, rely=0, relwidth=1, relheight=1)
         
         # --- 层级 2: 前景 Logo 区 ---
-        # 使用 Frame 居中，利用背景色遮挡住后面的文字，保证 Logo 清晰
-        self.center_box = ctk.CTkFrame(self, fg_color=self.bg_color, corner_radius=0)
-        self.center_box.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0, height=120)
+        # [修复] height 参数必须在构造函数中传递，不能在 place 中传递
+        self.center_box = ctk.CTkFrame(
+            self, 
+            fg_color=self.bg_color, 
+            corner_radius=0,
+            height=140 # 在这里指定高度，用于遮挡背景文字
+        )
+        # 使用 place 居中，relwidth=1.0 占满整行
+        self.center_box.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0)
 
         # 主标题
+        # Windows 上使用 Impact 或 Segoe UI Black 更有工业感
         title_font = ("Segoe UI Black", 52) if platform.system() == "Windows" else ("Arial Black", 52)
-        ctk.CTkLabel(self.center_box, text="CINÉTICO", font=title_font, text_color="#FFFFFF").pack(pady=(10, 0))
+        ctk.CTkLabel(self.center_box, text="CINÉTICO", font=title_font, text_color="#FFFFFF").pack(pady=(20, 0))
         
         # 副标题
-        ctk.CTkLabel(self.center_box, text="ENCODER PRO", font=("Segoe UI", 12, "bold"), text_color=self.accent_color).pack(pady=(0, 10))
+        ctk.CTkLabel(self.center_box, text="ENCODER PRO", font=("Segoe UI", 12, "bold"), text_color=self.accent_color).pack(pady=(0, 20))
 
         # --- 层级 3: 底部进度条 ---
-        self.bar = ctk.CTkProgressBar(self, width=w, height=3, progress_color=self.accent_color, fg_color="#1A1A1A", border_width=0, corner_radius=0)
+        self.bar = ctk.CTkProgressBar(
+            self, 
+            width=w, 
+            height=3, 
+            progress_color=self.accent_color, 
+            fg_color="#1A1A1A", 
+            border_width=0, 
+            corner_radius=0
+        )
         self.bar.place(relx=0, rely=0.99, anchor="sw", relwidth=1)
         self.bar.set(0)
         
@@ -1064,16 +1077,14 @@ class SplashScreen(ctk.CTkToplevel):
     def log(self, text):
         """向背景控制台追加日志并滚动"""
         self.console.configure(state="normal")
-        # 插入带时间戳的日志
         timestamp = f"[{time.time() % 1000:06.2f}]"
         self.console.insert("end", f"{timestamp} {text}\n")
-        self.console.see("end") # 自动滚动到底部
+        self.console.see("end") 
         self.console.configure(state="disabled")
         self.update()
 
     def run_boot_sequence(self):
         try:
-            # 预定义一些看起来很厉害的日志
             boot_logs = [
                 "BOOT_SEQUENCE_STARTED...",
                 "Loading kernel modules: ntfs, exfat, cuda_drv...",
@@ -1086,14 +1097,14 @@ class SplashScreen(ctk.CTkToplevel):
                 "Prefetching UI assets..."
             ]
 
-            # 阶段 1: 快速刷屏 (视觉效果)
+            # 阶段 1: 视觉刷屏
             for line in boot_logs:
                 self.log(line)
-                time.sleep(0.01 + random.random() * 0.05) # 随机极短延迟
+                time.sleep(0.01 + random.random() * 0.05)
 
             self.bar.set(0.2)
             
-            # 阶段 2: 真实业务 (穿插日志)
+            # 阶段 2: 真实业务
             self.log(">> EXEC: check_dependencies()")
             check_and_install_dependencies()
             self.log(">> DONE: Dependencies verified.")
