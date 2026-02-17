@@ -999,9 +999,9 @@ class ModernAlert(ctk.CTkToplevel):
 
 class SplashScreen(ctk.CTkToplevel):
     """
-    [PyArchitect Design v4.0] "Dark Matter" 极简启动页
-    - 视觉升级：OLED 级极深色背景，精密排印，极细光束进度条。
-    - 逻辑保持：无缝后台加载主程序。
+    [PyArchitect Design v4.1] "Dark Matter" 极简启动页 (稳定版)
+    - 修复：移除未定义的 TkFont 引用，不再进行不稳定的字体检测。
+    - 视觉：保持极深色背景 (#0A0A0A) 与精密排印。
     """
     def __init__(self, root_app):
         super().__init__(root_app)
@@ -1012,56 +1012,48 @@ class SplashScreen(ctk.CTkToplevel):
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         
-        # 尺寸稍微加大，增加呼吸感
         w, h = 540, 320
         ws, hs = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f'{w}x{h}+{int((ws-w)/2)}+{int((hs-h)/2)}')
         
-        # 2. 视觉结构搭建 (模拟极其精致的 1px 边框)
-        # 最外层作为边框色
+        # 2. 视觉结构 (1px 边框 + 极深背景)
         border_color = "#2D2D2D"
-        bg_color = "#0A0A0A" # 极深色背景
+        bg_color = "#0A0A0A"
         text_secondary = "#888888"
 
         self.configure(fg_color=border_color)
         
-        # 内层主内容区 (留出 1px 边距形成边框)
         self.inner_frame = ctk.CTkFrame(self, fg_color=bg_color, corner_radius=0)
         self.inner_frame.pack(fill="both", expand=True, padx=1, pady=1)
 
-        # 3. UI 元素布局 (精密排印)
-        # 使用 Frame 来控制垂直居中结构
+        # 3. UI 元素布局
         content_frame = ctk.CTkFrame(self.inner_frame, fg_color="transparent")
         content_frame.pack(expand=True, fill="both", pady=(50, 0))
 
-        # 主标题：使用更现代、字重适中的字体
-        # 优先尝试 Roboto Medium (如果系统有)，回退到 Segoe UI Semibold
-        title_font = ("Roboto Medium", 46) if "Roboto" in TkFont.families() else ("Segoe UI Semibold", 46)
-        ctk.CTkLabel(content_frame, text="CINÉTICO", font=title_font, text_color="#FFFFFF").pack(anchor="s")
+        # [关键修复] 直接指定 Windows 标准字体，不再依赖外部库检测
+        # 如果是 Windows，使用 Segoe UI Semibold；如果是 Mac，使用 Arial Bold
+        safe_title_font = ("Segoe UI Semibold", 46) if platform.system() == "Windows" else ("Arial", 46, "bold")
         
-        # 副标题：小字号、强调色、简洁有力
+        ctk.CTkLabel(content_frame, text="CINÉTICO", font=safe_title_font, text_color="#FFFFFF").pack(anchor="s")
+        
+        # 副标题
         ctk.CTkLabel(content_frame, text="ENCODER PRO", font=("Segoe UI", 12, "bold"), text_color=COLOR_ACCENT).pack(anchor="n", pady=(5, 0))
         
-        # 底部区域 Frame
         bottom_frame = ctk.CTkFrame(self.inner_frame, fg_color="transparent", height=60)
         bottom_frame.pack(side="bottom", fill="x")
 
-        # 状态文字：极简风格，靠右对齐
+        # 状态文字
         self.status = ctk.CTkLabel(bottom_frame, text="INITIALIZING SYSTEM...", font=("Consolas", 9), text_color=text_secondary)
         self.status.pack(side="top", anchor="e", padx=20, pady=(0, 5))
         
-        # 进度条：极细光束风格 (2px 高度)，贴底放置
+        # 进度条
         self.bar = ctk.CTkProgressBar(bottom_frame, width=w, height=2, progress_color=COLOR_ACCENT, fg_color="#1A1A1A", border_width=0, corner_radius=0)
         self.bar.pack(side="bottom", fill="x")
         self.bar.set(0)
         
-        # 强制渲染首帧
         self.update()
-
-        # 启动后台任务
         threading.Thread(target=self.run_tasks, daemon=True).start()
 
-    # --- 以下逻辑保持不变 ---
     def update_info(self, text, val):
         self.status.configure(text=text.upper())
         self.bar.set(val)
@@ -1069,8 +1061,7 @@ class SplashScreen(ctk.CTkToplevel):
 
     def run_tasks(self):
         try:
-            # 适当缩短了不必要的等待时间，让启动更迅速
-            time.sleep(0.2) 
+            time.sleep(0.2)
             
             self.update_info("Loading Core Libraries...", 0.3)
             check_and_install_dependencies()
@@ -1078,7 +1069,6 @@ class SplashScreen(ctk.CTkToplevel):
             self.update_info("Verifying Media Engine...", 0.6)
             time.sleep(0.1)
             
-            # 磁盘预热
             self.update_info("Optimizing I/O Subsystem...", 0.8)
             DiskManager.get_windows_drives()
             
