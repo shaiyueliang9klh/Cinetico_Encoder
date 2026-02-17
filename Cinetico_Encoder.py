@@ -999,10 +999,10 @@ class ModernAlert(ctk.CTkToplevel):
 
 class SplashScreen(ctk.CTkToplevel):
     """
-    [PyArchitect Design v6.1] "Ghost Console" 极客启动页 (修复版)
-    - 修复：遵守 CustomTkinter 的 place 布局规则，解决 height 参数报错。
-    - 视觉：ComfyUI 风格，背景为实时滚动的低对比度日志流。
-    - 交互：Logo 悬浮于日志流之上，硬核工业感。
+    [PyArchitect Design v7.0] "Cinematic Giant" 影院级启动页
+    - 尺寸：960x540 (16:9 qHD)，大幅提升视觉张力。
+    - 排印：超大字号 (90pt) Logo，极具压迫感。
+    - 视觉：保留 ComfyUI 风格的幽灵控制台背景。
     """
     def __init__(self, root_app):
         super().__init__(root_app)
@@ -1013,7 +1013,8 @@ class SplashScreen(ctk.CTkToplevel):
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         
-        w, h = 680, 400
+        # [改动] 尺寸大幅提升，由小家碧玉变为大家闺秀
+        w, h = 960, 540 
         ws, hs = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f'{w}x{h}+{int((ws-w)/2)}+{int((hs-h)/2)}')
         
@@ -1021,45 +1022,43 @@ class SplashScreen(ctk.CTkToplevel):
         self.bg_color = "#0B0B0B"
         self.configure(fg_color=self.bg_color)
         
-        # [关键逻辑] 解析颜色元组，只取当前模式颜色
+        # 解析颜色
         raw_accent = COLOR_ACCENT
         self.accent_color = raw_accent[1] if isinstance(raw_accent, tuple) else raw_accent
 
-        # --- 层级 1: 背景日志流 (The Ghost Console) ---
+        # --- 层级 1: 背景日志流 ---
         self.console = ctk.CTkTextbox(
             self, 
             fg_color="transparent", 
-            text_color="#333333", # 极暗的灰色，作为背景纹理
-            font=("Consolas", 10),
+            text_color="#2A2A2A", # 稍微再暗一点，防止抢了巨型Logo的风头
+            font=("Consolas", 11), # 字体稍微加大
             state="disabled",
             activate_scrollbars=False
         )
         self.console.place(relx=0, rely=0, relwidth=1, relheight=1)
         
         # --- 层级 2: 前景 Logo 区 ---
-        # [修复] height 参数必须在构造函数中传递，不能在 place 中传递
+        # [改动] 高度增加以适应更大的字体
         self.center_box = ctk.CTkFrame(
             self, 
             fg_color=self.bg_color, 
             corner_radius=0,
-            height=140 # 在这里指定高度，用于遮挡背景文字
+            height=200 
         )
-        # 使用 place 居中，relwidth=1.0 占满整行
         self.center_box.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0)
 
-        # 主标题
-        # Windows 上使用 Impact 或 Segoe UI Black 更有工业感
-        title_font = ("Segoe UI Black", 52) if platform.system() == "Windows" else ("Arial Black", 52)
-        ctk.CTkLabel(self.center_box, text="CINÉTICO", font=title_font, text_color="#FFFFFF").pack(pady=(20, 0))
+        # 主标题 [改动] 字号巨大化
+        title_font = ("Segoe UI Black", 90) if platform.system() == "Windows" else ("Arial Black", 90)
+        ctk.CTkLabel(self.center_box, text="CINÉTICO", font=title_font, text_color="#FFFFFF").pack(pady=(25, 0))
         
-        # 副标题
-        ctk.CTkLabel(self.center_box, text="ENCODER PRO", font=("Segoe UI", 12, "bold"), text_color=self.accent_color).pack(pady=(0, 20))
+        # 副标题 [改动] 字号微调
+        ctk.CTkLabel(self.center_box, text="E N C O D E R   P R O", font=("Segoe UI", 16, "bold"), text_color=self.accent_color).pack(pady=(0, 25))
 
         # --- 层级 3: 底部进度条 ---
         self.bar = ctk.CTkProgressBar(
             self, 
             width=w, 
-            height=3, 
+            height=4, # 稍微加厚一点点
             progress_color=self.accent_color, 
             fg_color="#1A1A1A", 
             border_width=0, 
@@ -1100,7 +1099,7 @@ class SplashScreen(ctk.CTkToplevel):
             # 阶段 1: 视觉刷屏
             for line in boot_logs:
                 self.log(line)
-                time.sleep(0.01 + random.random() * 0.05)
+                time.sleep(0.01 + random.random() * 0.04)
 
             self.bar.set(0.2)
             
