@@ -1909,7 +1909,11 @@ class UltraEncoderApp(DnDWindow):
             self.safe_update(card.set_status, "IO 错误", COLOR_ERROR, STATE_ERROR)
 
     def _worker_compute_task(self, task_file):
-        """线程任务：视频编码计算 (PyArchitect Optimized: Log Capture & Deadlock Fix)"""
+        """
+        线程任务：视频编码计算 (PyArchitect Optimized: 4:2:2 Auto-Fallback)
+        [修复] 针对 Sony/Canon 等设备拍摄的 HEVC 4:2:2 10bit 素材，
+        自动禁用 NVIDIA 硬件解码（防止崩溃），但保留硬件编码以维持性能。
+        """
         card = self.task_widgets[task_file]
         fname = os.path.basename(task_file)
         slot_idx = -1
@@ -1941,28 +1945,51 @@ class UltraEncoderApp(DnDWindow):
                 input_size = os.path.getsize(task_file)
                 duration = self.get_dur(task_file)
                 if duration <= 0: duration = 1.0
-            
-            # 1. 提取音频 (防止音频流时间戳问题)
+
+            # --- [PyArchitect 新增] 像素格式预检 (防止 4:2:2 炸显卡) ---
+            # 即使开启了 GPU 选项，如果源文件是 4:2:2 (yuv422p10le 等)，NVIDIA 消费级显卡无法硬解。
+            # 必须强制回退到 CPU 解码，否则 FFmpeg 会立即崩溃。
+            force_cpu_decode = False
+            pixel_format_info = "Unknown"
+            try:
+                probe_cmd = [
+                    FFPROBE_PATH, "-v", "error", "-select_streams", "v:0", 
+                    "-show_entries", "stream=pix_fmt", "-of", "csv=p=0", task_file
+                ]
+                # 获取像素格式字符串，例如 "yuv422p10le"
+                pixel_format_info = subprocess.check_output(probe_cmd, **get_subprocess_args()).decode().strip()
+                
+                if "422" in pixel_format_info: 
+                    force_cpu_decode = True
+                    print(f"[Smart-Check] Detected 4:2:2 source ({pixel_format_info}). Disabling HW Decode for stability.")
+            except Exception as e:
+                print(f"[Warn] Pixel format probe failed: {e}")
+
+            # 1. 提取音频
             self.safe_update(ch_ui.activate, fname, "🎵 正在分离音频流 / Extracting Audio...")
             self.safe_update(card.set_status, "🎵 提取音频...", COLOR_READING, STATE_ENCODING)
             has_audio = False
             
-            # [PyArchitect Fix] 明确捕获音频提取的错误
             extract_cmd = [FFMPEG_PATH, "-y", "-i", task_file, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", "-f", "wav", temp_audio_wav]
             audio_proc = subprocess.run(extract_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, **get_subprocess_args())
             
             if audio_proc.returncode == 0 and os.path.exists(temp_audio_wav) and os.path.getsize(temp_audio_wav) > 1024: 
                 has_audio = True
-            else:
-                # 音频提取失败不应阻断主流程，但记录警告
-                print(f"[Warn] Audio extraction failed or empty. Code: {audio_proc.returncode}")
 
             self.safe_update(card.set_status, "▶️ 智能编码中...", COLOR_ACCENT, STATE_ENCODING)
             
             # 2. 构建编码命令
             codec_sel = self.codec_var.get()
-            using_gpu = self.gpu_var.get()
-            final_hw_encode = using_gpu
+            using_gpu = self.gpu_var.get() # 用户是否勾选了 GPU
+            
+            # 决策：是否允许硬件解码输入
+            # 如果是 Mac (VideoToolbox) 通常支持 422，Windows N 卡不支持
+            allow_hw_decode_input = using_gpu
+            if force_cpu_decode and platform.system() == "Windows":
+                allow_hw_decode_input = False
+            
+            # 决策：是否使用硬件编码输出
+            final_hw_encode = using_gpu 
             
             # 输入源判定
             input_video_source = task_file
@@ -1979,8 +2006,8 @@ class UltraEncoderApp(DnDWindow):
             
             cmd = [FFMPEG_PATH, "-y"]
             
-            # [硬件加速解码]
-            if using_gpu:
+            # [硬件加速解码 - 输入端]
+            if allow_hw_decode_input:
                 if platform.system() == "Darwin":
                     cmd.extend(["-hwaccel", "videotoolbox"])
                 else:
@@ -2009,27 +2036,39 @@ class UltraEncoderApp(DnDWindow):
             else:
                 cmd.extend(["-c:v", "libx264"])
 
-            # [编码参数控制]
+            # [编码参数与色彩格式转换]
             use_10bit = self.depth_10bit_var.get()
+            # NVENC H.264 10bit 支持极差，强制回退 8bit
             if final_hw_encode and "H.264" in codec_sel and use_10bit: use_10bit = False 
 
             if final_hw_encode:
                 if platform.system() == "Darwin":
+                    # Mac 逻辑保持不变
                     mac_quality = int(100 - (self.crf_var.get() * 2.2))
                     if mac_quality < 20: mac_quality = 20
                     cmd.extend(["-q:v", str(mac_quality)])
                     if use_10bit: cmd.extend(["-pix_fmt", "p010le"])
                     else: cmd.extend(["-pix_fmt", "yuv420p"])
                 else:
+                    # Windows / Nvidia 逻辑
                     if use_10bit:
-                         if using_gpu: cmd.extend(["-vf", "scale_cuda=format=p010le"])
-                         else: cmd.extend(["-pix_fmt", "p010le"])
+                         if allow_hw_decode_input: 
+                             # 只有当 GPU 解码时，才使用 scale_cuda
+                             cmd.extend(["-vf", "scale_cuda=format=p010le"])
+                         else: 
+                             # 如果是 CPU 解码 (4:2:2)，需要软件转换格式，driver 会自动上传到 GPU 编码
+                             cmd.extend(["-pix_fmt", "p010le"])
                     else:
-                         if using_gpu: cmd.extend(["-vf", "scale_cuda=format=yuv420p"])
-                         else: cmd.extend(["-pix_fmt", "yuv420p"])
+                         if allow_hw_decode_input: 
+                             cmd.extend(["-vf", "scale_cuda=format=yuv420p"])
+                         else: 
+                             # CPU 解码 -> 软件转 420p -> 喂给 NVENC
+                             cmd.extend(["-pix_fmt", "yuv420p"])
+
                     cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), "-b:v", "0"])
                     if "AV1" not in codec_sel: cmd.extend(["-preset", "p4"])
             else:
+                # 纯 CPU 模式
                 if use_10bit: cmd.extend(["-pix_fmt", "yuv420p10le"])
                 else: cmd.extend(["-pix_fmt", "yuv420p"])
                 cmd.extend(["-crf", str(self.crf_var.get()), "-preset", "medium"])
@@ -2038,10 +2077,9 @@ class UltraEncoderApp(DnDWindow):
             if self.keep_meta_var.get(): cmd.extend(["-map_metadata", "0"])
             cmd.extend(["-progress", "pipe:1", "-nostats", working_output_file])
 
-            # 3. 启动 FFmpeg 子进程 [PyArchitect Fix: Merge Stderr]
+            # 3. 启动 FFmpeg 子进程
             kwargs = get_subprocess_args()
             if platform.system() == "Windows":
-                 # 关键修改：stderr=subprocess.STDOUT
                  proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
                                        startupinfo=kwargs['startupinfo'], creationflags=kwargs['creationflags'])
             else:
@@ -2049,11 +2087,16 @@ class UltraEncoderApp(DnDWindow):
 
             self.active_procs.append(proc)
             
-            tag_info = f"Enc: {'GPU' if final_hw_encode else 'CPU'}"
+            # 更新 UI 标签，让用户知道当前的解码模式
+            decode_mode = "GPU" if allow_hw_decode_input else "CPU"
+            # 如果强制降级了，提示一下
+            if force_cpu_decode: decode_mode = "CPU(4:2:2)"
+            
+            tag_info = f"Enc: {'GPU' if final_hw_encode else 'CPU'} | Dec: {decode_mode}"
             if card.source_mode == "RAM": tag_info += " | RAM"
             self.safe_update(ch_ui.activate, fname, tag_info)
             
-            # 4. 进度监听循环 (现在也能读到错误信息了)
+            # 4. 进度监听循环
             progress_stats = {}
             start_t = time.time()
             last_ui_update_time = 0 
@@ -2064,10 +2107,9 @@ class UltraEncoderApp(DnDWindow):
                 try: 
                     line_str = line.decode('utf-8', errors='ignore').strip()
                     if not line_str: continue
-                    log_buffer.append(line_str) # 实时记录日志到环形缓冲区
+                    log_buffer.append(line_str)
                     
                     if "=" in line_str:
-                        # 简单的容错解析，防止非标准输出导致 crash
                         parts = line_str.split("=", 1)
                         if len(parts) == 2:
                             key, value = parts
@@ -2104,7 +2146,7 @@ class UltraEncoderApp(DnDWindow):
             
             proc.wait()
             
-            # 清理资源
+            # 清理
             if proc in self.active_procs: self.active_procs.remove(proc)
             if os.path.exists(temp_audio_wav):
                 try: os.remove(temp_audio_wav)
@@ -2114,7 +2156,6 @@ class UltraEncoderApp(DnDWindow):
             if self.stop_flag:
                 self.safe_update(card.set_status, "已停止", COLOR_PAUSED, STATE_PENDING)
             elif proc.returncode == 0:
-                # ... (保持原有的成功处理逻辑，这部分没问题) ...
                 temp_size = 0
                 if os.path.exists(working_output_file):
                     temp_size = os.path.getsize(working_output_file)
@@ -2144,10 +2185,9 @@ class UltraEncoderApp(DnDWindow):
                     self.safe_update(card.set_status, f"完成 {ratio_str}", COLOR_SUCCESS, STATE_DONE)
                     self.safe_update(card.set_progress, 1.0, COLOR_SUCCESS)
             else:
-                # [PyArchitect Fix] 失败时，抛出收集到的日志
                 err_summary = "\n".join(list(log_buffer))
-                print(f"FAILED LOG for {fname}:\n{err_summary}") # 控制台打印
-                self.safe_update(messagebox.showerror, "编码失败", f"文件: {fname}\n错误代码: {proc.returncode}\n\n最后日志:\n{err_summary}")
+                print(f"FAILED LOG for {fname}:\n{err_summary}") 
+                self.safe_update(messagebox.showerror, "编码失败", f"文件: {fname}\n代码: {proc.returncode}\n建议：检测到 4:2:2 素材，请确保显卡驱动最新。\n\n最后日志:\n{err_summary}")
                 self.safe_update(card.set_status, "转码失败", COLOR_ERROR, STATE_ERROR)
                 
         except Exception as e:
