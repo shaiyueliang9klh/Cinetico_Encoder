@@ -281,24 +281,103 @@ def check_ffmpeg():
         return True
     except Exception: return False
 
-# 磁盘类型缓存（避免重复调用耗时的 API）
-drive_type_cache = {} 
+# [PyArchitect Fix] 恢复 Windows 底层磁盘类型检测
+# 必须导入 ctypes 库 (如果在文件头部已导入，此处可省略，但建议保留以确保模块独立性)
+import ctypes
+from typing import Optional
 
-def is_drive_ssd(path):
+# 磁盘类型缓存（避免重复调用耗时的 Win32 API）
+drive_type_cache: dict[str, bool] = {}
+
+def is_drive_ssd(path: str) -> bool:
     """
-    判断指定路径所在的磁盘是否为 SSD。
-    目前仅实现了 Windows 的 API 调用，Mac/Linux 默认按 SSD 处理（通常性能足够）。
+    [恢复] 准确判断指定路径所在的磁盘是否为 SSD (Windows)。
+    原理：通过 DeviceIoControl 查询 IOCTL_STORAGE_QUERY_PROPERTY。
+    如果硬件报告 IncursSeekPenalty=True，则为 HDD (有寻道时间)；否则为 SSD。
     """
-    if platform.system() != "Windows": return True 
-    try:
-        root = os.path.splitdrive(os.path.abspath(path))[0].upper() 
-        if not root: return False
-        drive_letter = root 
-        if drive_letter in drive_type_cache: return drive_type_cache[drive_letter]
-        # 简化逻辑：此处省略了复杂的 Win32 DeviceIoControl 代码，实际生产环境建议完整实现
-        return True 
-    except Exception:
+    # 1. 非 Windows 系统默认视为 SSD (Linux/Mac 通常性能足够或无法用此法检测)
+    if platform.system() != "Windows":
         return True
+        
+    try:
+        # 2. 获取盘符 (例如 "C")
+        path_abs = os.path.abspath(path)
+        root = os.path.splitdrive(path_abs)[0].upper()
+        if not root: 
+            return False
+            
+        drive_letter = root # e.g., "C:"
+        
+        # 3. 检查缓存
+        if drive_letter in drive_type_cache: 
+            return drive_type_cache[drive_letter]
+
+        # 4. 准备 Win32 API 结构体
+        class STORAGE_PROPERTY_QUERY(ctypes.Structure):
+            _fields_ = [
+                ("PropertyId", ctypes.c_uint),
+                ("QueryType", ctypes.c_uint),
+                ("AdditionalParameters", ctypes.c_byte * 1)
+            ]
+            
+        class DEVICE_SEEK_PENALTY_DESCRIPTOR(ctypes.Structure):
+            _fields_ = [
+                ("Version", ctypes.c_ulong),
+                ("Size", ctypes.c_ulong),
+                ("IncursSeekPenalty", ctypes.c_bool) # 关键字段：是否产生寻道惩罚
+            ]
+
+        # PropertyId = 7 (StorageDeviceSeekPenaltyProperty)
+        StorageDeviceSeekPenaltyProperty = 7
+        PropertyStandardQuery = 0
+        
+        query = STORAGE_PROPERTY_QUERY()
+        query.PropertyId = StorageDeviceSeekPenaltyProperty
+        query.QueryType = PropertyStandardQuery
+        
+        out = DEVICE_SEEK_PENALTY_DESCRIPTOR()
+        bytes_returned = ctypes.c_ulong()
+        
+        # 5. 获取卷句柄 (注意：需要管理员权限或足够的文件访问权)
+        # \\.\C: 是 Windows 设备的物理路径格式
+        volume_path = f"\\\\.\\{drive_letter}"
+        
+        # CreateFileW 参数: GENERIC_READ, SHARE_READ|WRITE, OPEN_EXISTING
+        h_vol = ctypes.windll.kernel32.CreateFileW(
+            volume_path, 0, 0x00000001 | 0x00000002, None, 3, 0, None
+        )
+        
+        if h_vol == -1:
+            # 无法打开设备（可能是网络驱动器或权限不足），默认保守返回 False (视为 HDD)
+            drive_type_cache[drive_letter] = False
+            return False
+
+        # 6. 发送控制码 IOCTL_STORAGE_QUERY_PROPERTY (0x002D1400)
+        ret = ctypes.windll.kernel32.DeviceIoControl(
+            h_vol,
+            0x002D1400,
+            ctypes.byref(query), ctypes.sizeof(query),
+            ctypes.byref(out), ctypes.sizeof(out),
+            ctypes.byref(bytes_returned),
+            None
+        )
+        
+        ctypes.windll.kernel32.CloseHandle(h_vol)
+        
+        if ret:
+            # IncursSeekPenalty 为 True 代表是 HDD (有寻道)，False 代表 SSD
+            is_ssd = not out.IncursSeekPenalty
+            drive_type_cache[drive_letter] = is_ssd
+            
+            # [Debug Log] 可以在控制台看到检测结果
+            print(f"[Disk Check] Drive {drive_letter} is {'SSD' if is_ssd else 'HDD'}")
+            return is_ssd
+        
+    except Exception as e:
+        print(f"[Warn] Disk detection failed for {path}: {e}")
+    
+    # 7. 兜底策略：如果检测失败，默认为 HDD 以防止卡顿
+    return False
 
 def find_best_cache_drive(manual_override=None):
     """
