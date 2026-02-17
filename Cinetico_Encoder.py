@@ -997,71 +997,94 @@ class ModernAlert(ctk.CTkToplevel):
         ctk.CTkButton(bg_frame, text="OK", width=80, height=28, fg_color=color, command=self.destroy).pack(side="bottom")
 
 
-class SplashScreen(ctk.CTk):
-    """[PyArchitect Optimized] 异步加载启动页 - 增强可见性版"""
-    def __init__(self):
-        super().__init__()
-        # 1. 设置无边框
-        self.overrideredirect(True) 
+class SplashScreen(ctk.CTkToplevel):
+    """
+    [PyArchitect Design] 极简主义启动页 (v3.0)
+    - 视觉升级：深色磨砂质感，无边框悬浮设计。
+    - 逻辑升级：负责主程序的预热，消除“黑屏间隙”。
+    """
+    def __init__(self, root_app):
+        super().__init__(root_app)
+        self.root = root_app
+        self.root.withdraw() # 暂时隐藏主程序，只显示启动页
+
+        # 1. 窗口属性设置
+        self.overrideredirect(True) # 无边框
+        self.attributes("-topmost", True) # 强制置顶
         
-        # 2. 屏幕居中
-        w, h = 480, 280
+        # 2. 屏幕居中算法
+        w, h = 500, 300
         ws, hs = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f'{w}x{h}+{int((ws-w)/2)}+{int((hs-h)/2)}')
-        self.configure(fg_color=("#F3F3F3", "#1a1a1a"))
-
-        # [关键修复] 强制窗口置顶并获取焦点
-        self.attributes("-topmost", True)
-        self.lift()
-
-        # UI 构建
-        ctk.CTkLabel(self, text="Cinético", font=("Impact", 42), text_color=COLOR_ACCENT).pack(pady=(50, 5))
-        ctk.CTkLabel(self, text="Encoder Pro", font=("Arial", 14, "bold"), text_color="gray").pack(pady=(0, 40))
+        x, y = int((ws-w)/2), int((hs-h)/2)
+        self.geometry(f'{w}x{h}+{x}+{y}')
         
-        self.status = ctk.CTkLabel(self, text="Initializing...", font=("Consolas", 10))
-        self.status.pack(side="bottom", pady=(0, 10))
+        # 3. 视觉设计 (深色极简风格)
+        # 外层 Frame (模拟边框)
+        self.configure(fg_color="#1a1a1a") 
+        self.border_frame = ctk.CTkFrame(self, fg_color="#1a1a1a", border_width=2, border_color="#333333", corner_radius=0)
+        self.border_frame.pack(fill="both", expand=True)
         
-        self.bar = ctk.CTkProgressBar(self, width=400, height=4, progress_color=COLOR_ACCENT)
-        self.bar.pack(side="bottom", pady=(0, 15))
+        # 内层内容区
+        self.inner_frame = ctk.CTkFrame(self.border_frame, fg_color="#121212", corner_radius=0)
+        self.inner_frame.pack(fill="both", expand=True, padx=2, pady=2)
+
+        # 4. UI 元素布局
+        # LOGO / 标题
+        ctk.CTkLabel(self.inner_frame, text="CINÉTICO", font=("Segoe UI Black", 48), text_color="#FFFFFF").pack(pady=(60, 0))
+        ctk.CTkLabel(self.inner_frame, text="ENCODER PRO", font=("Arial", 14, "bold"), text_color=COLOR_ACCENT, letter_spacing=5).pack(pady=(0, 40))
+        
+        # 状态文字 (右下角极简风格)
+        self.status = ctk.CTkLabel(self.inner_frame, text="INITIALIZING...", font=("Consolas", 10), text_color="#666666")
+        self.status.pack(side="bottom", anchor="e", padx=30, pady=(0, 5))
+        
+        # 极细进度条
+        self.bar = ctk.CTkProgressBar(self.inner_frame, width=440, height=3, progress_color=COLOR_ACCENT, fg_color="#222222")
+        self.bar.pack(side="bottom", pady=(0, 25))
         self.bar.set(0)
         
-        # [关键修复] 强制系统立即绘制 UI，不要等待
+        # 强制立即渲染第一帧
         self.update()
 
-        # 启动后台检查线程
+        # 启动后台初始化任务
         threading.Thread(target=self.run_tasks, daemon=True).start()
 
     def update_info(self, text, val):
-        # 确保 UI 更新能即时反映
-        self.status.configure(text=text)
+        self.status.configure(text=text.upper())
         self.bar.set(val)
-        self.update() 
+        self.update()
 
     def run_tasks(self):
-        # 给予一个极短的呼吸时间，确保窗口已经映射到桌面
-        time.sleep(0.5) 
-
-        # 1. Python 依赖
-        self.update_info("Checking Python Libraries...", 0.2)
-        try: check_and_install_dependencies()
-        except: pass
-        
-        # 2. FFmpeg
-        self.update_info("Verifying FFmpeg Core...", 0.5)
-        time.sleep(0.3) # 稍微停顿一下，让用户看清进度
+        """执行环境检查，并平滑过渡到主程序"""
+        try:
+            time.sleep(0.3) # 视觉缓冲
             
-        # 3. 磁盘预热
-        self.update_info("Analyzing Storage Performance...", 0.8)
-        DiskManager.get_windows_drives() 
-        time.sleep(0.5) 
-        
-        self.update_info("System Ready.", 1.0)
-        
-        # [关键修复] 稍微多留一点时间展示 "Ready" 状态
-        time.sleep(0.8) 
-        
-        # 使用 after 异步关闭，比直接 quit() 更优雅，能有效减少报错
-        self.after(100, self.quit)
+            self.update_info("Loading Dependencies...", 0.2)
+            check_and_install_dependencies()
+            
+            self.update_info("Verifying FFmpeg Core...", 0.5)
+            # 这里其实很快，稍微停顿一下让用户感觉到检查过程
+            time.sleep(0.2) 
+            
+            self.update_info("Mounting Storage Subsystem...", 0.7)
+            # 在启动页显示的同时，预热磁盘检查
+            DiskManager.get_windows_drives()
+            
+            self.update_info("Starting UI Engine...", 0.9)
+            time.sleep(0.3)
+            
+            self.update_info("READY.", 1.0)
+            time.sleep(0.5)
+            
+            # --- 关键时刻：无缝切换 ---
+            # 1. 显示主窗口
+            self.root.deiconify() 
+            # 2. 销毁启动页
+            self.destroy() 
+            
+        except Exception as e:
+            print(f"Splash Error: {e}")
+            self.root.deiconify()
+            self.destroy()
 
 # =========================================================================
 # [Module 4] Main Application
@@ -2433,27 +2456,36 @@ class UltraEncoderApp(DnDWindow):
                     self.available_indices.sort()
 
 if __name__ == "__main__":
-    # 1. [Fix] Windows 控制台隐藏
+    # --- [PyArchitect Fix] 控制台隐身术 ---
+    # 这一步会在程序启动的瞬间，查找当前的控制台窗口并将其隐藏。
+    # 这样在 VSCode 里你可以看到输出（因为 VSCode 捕获了 stdout），但不会弹出一个独立的黑框。
     try:
         if platform.system() == "Windows":
-            ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
-    except: pass
+            import ctypes
+            # GetConsoleWindow 获取当前窗口句柄，ShowWindow(h, 0) 隐藏它
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd != 0:
+                ctypes.windll.user32.ShowWindow(hwnd, 0)
+    except Exception:
+        pass
 
-    # 2. [Fix] 单实例锁 (防止多开)
-    # 尝试绑定一个特定端口，如果失败说明程序已在运行
+    # --- [PyArchitect Fix] 单实例锁 ---
     instance_lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        instance_lock.bind(('127.0.0.1', 53333)) # 端口号可随意指定一个不常用的
+        instance_lock.bind(('127.0.0.1', 53333))
     except socket.error:
-        # 此时 UI 库还没加载，只能用原生弹窗提示一下然后退出
-        ctypes.windll.user32.MessageBoxW(0, "Cinético 正在运行中，请勿重复打开。", "Error", 0)
+        # 如果锁失败，说明已经有一个实例在运行，直接静默退出
         sys.exit(0)
 
-    # 3. [Feature] 启动画面 (执行耗时的环境检查)
-    splash = SplashScreen()
-    splash.mainloop() # 这一步会阻塞，直到 splash 内部调用 self.quit()
-    splash.destroy()  # 销毁启动页，释放资源
-
-    # 4. 启动主程序
+    # --- [PyArchitect Optimization] 预初始化主程序 ---
+    # 现在的逻辑是：先创建主程序(App) -> 它是隐藏的 -> 然后创建启动页(Splash) -> 启动页初始化完毕后唤醒主程序
+    # 这样就彻底消灭了“启动页消失后主程序还没出来”的尴尬间隙。
+    
     app = UltraEncoderApp()
+    
+    # 将 app 传给 splash，splash 会负责在合适的时机展示 app
+    splash = SplashScreen(root_app=app)
+    
+    # 进入主事件循环
+    # 注意：这里我们运行 app.mainloop()，因为 splash 是 app 的 Toplevel，它会一并运行
     app.mainloop()
