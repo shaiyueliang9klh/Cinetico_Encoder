@@ -802,7 +802,7 @@ class HelpWindow(ctk.CTkToplevel):
         
         ctk.CTkLabel(header, text="Cinético Technical Overview", 
                      font=self.FONT_H1, text_color=self.COL_TEXT_HI, anchor="w").pack(fill="x")
-        ctk.CTkLabel(header, text="Cinético 技术概览与操作指南 (v2.5.0)", 
+        ctk.CTkLabel(header, text="Cinético 技术概览与操作指南", 
                      font=self.FONT_H2, text_color=self.COL_TEXT_LOW, anchor="w").pack(fill="x", pady=(8, 0))
 
         # --- 滚动内容区 ---
@@ -997,19 +997,28 @@ class ModernAlert(ctk.CTkToplevel):
         ctk.CTkButton(bg_frame, text="OK", width=80, height=28, fg_color=color, command=self.destroy).pack(side="bottom")
 
 
+import customtkinter as ctk
+import threading
+import time
+import random
+import platform
+import sys
+# 注意：这里需要确保你已经导入了 check_and_install_dependencies, FFMPEG_PATH, DiskManager, COLOR_ACCENT
+# 如果在主文件中，这些都已经存在。
+
 class SplashScreen(ctk.CTkToplevel):
     """
-    [PyArchitect Design v8.0] "Cyberpunk Golden Ratio" 黄金分割启动页
-    - 布局：左侧 0.618 黄金分割点对齐，非对称美学。
-    - 排印：主副标题左对齐，字号平衡，增加品牌色竖线锚点。
-    - 细节：找回右下角状态小字，形成对角线视觉平衡。
+    [PyArchitect Design v9.0] "Data Stream" 最终版启动页
+    - 布局：左静右动。左侧 40% 极简标题，右侧 60% 瀑布流代码。
+    - 视觉：大幅增强代码流的可视度和滚动速度。
+    - 细节：保留黄金分割构图。
     """
     def __init__(self, root_app):
         super().__init__(root_app)
         self.root = root_app
         self.root.withdraw()
 
-        # 1. 窗口属性 (960x540 宽屏)
+        # 1. 窗口属性 (960x540)
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         
@@ -1024,53 +1033,53 @@ class SplashScreen(ctk.CTkToplevel):
         raw_accent = COLOR_ACCENT
         self.accent_color = raw_accent[1] if isinstance(raw_accent, tuple) else raw_accent
 
-        # --- 层级 1: 背景日志流 (右侧留白处看代码更清晰) ---
+        # --- 分栏布局 ---
+        
+        # [右侧] 代码流区域 (占据右边 60%)
+        # 使用 Frame 包裹以控制边距
+        self.console_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.console_frame.place(relx=0.4, rely=0.05, relwidth=0.58, relheight=0.9)
+        
         self.console = ctk.CTkTextbox(
-            self, 
+            self.console_frame, 
             fg_color="transparent", 
-            text_color="#1F1F1F", # 极暗，不抢戏
+            text_color="#555555", # [修改] 显著提亮颜色，确保可见
             font=("Consolas", 10),
             state="disabled",
-            activate_scrollbars=False
+            activate_scrollbars=False,
+            wrap="none" # 不换行，更有代码感
         )
-        self.console.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.console.pack(fill="both", expand=True)
+
+        # [左侧] 视觉锚点 (占据左边 40%)
         
-        # --- 层级 2: 左侧视觉锚点 (黄金分割布局) ---
-        # 黄金分割点约在 0.382 或 0.618，这里我们在左侧 10% 处开始，占据 40% 宽度
-        
-        # 2.1 品牌色竖线 (Visual Anchor)
+        # 1. 品牌色竖线
         self.anchor_line = ctk.CTkFrame(self, width=6, height=160, fg_color=self.accent_color, corner_radius=0)
-        self.anchor_line.place(relx=0.08, rely=0.4, anchor="w") # 垂直居中偏上一点
+        self.anchor_line.place(relx=0.08, rely=0.45, anchor="w") 
         
-        # 2.2 标题容器 (紧贴竖线右侧)
-        # 使用 Frame 来包裹文字，背景设为黑色半透明(实际上用纯黑遮挡)，以确保文字清晰
+        # 2. 标题容器
         self.text_box = ctk.CTkFrame(
             self, 
-            fg_color=self.bg_color, 
+            fg_color="transparent", 
             corner_radius=0,
-            width=500,
-            height=180
+            width=400,
+            height=200
         )
-        # 放在竖线右边一点点
-        self.text_box.place(relx=0.09, rely=0.4, anchor="w")
+        self.text_box.place(relx=0.09, rely=0.45, anchor="w")
 
-        # 主标题 (左对齐)
+        # 主标题
         title_font = ("Segoe UI Black", 64) if platform.system() == "Windows" else ("Arial Black", 64)
         ctk.CTkLabel(self.text_box, text="CINÉTICO", font=title_font, text_color="#FFFFFF").place(x=20, y=30)
         
-        # 副标题 (左对齐，拉开字间距以对齐主标题视觉宽度)
-        # "E  N  C  O  D  E  R     P  R  O"
+        # 副标题
         sub_font = ("Segoe UI", 14, "bold")
         ctk.CTkLabel(self.text_box, text="E  N  C  O  D  E  R     P  R  O", font=sub_font, text_color=self.accent_color).place(x=24, y=120)
 
-        # --- 层级 3: 右下角状态信息 (对角线平衡) ---
-        self.status_box = ctk.CTkFrame(self, fg_color=self.bg_color, corner_radius=0, height=30)
-        self.status_box.place(relx=0.95, rely=0.92, anchor="se")
-        
-        self.status_lbl = ctk.CTkLabel(self.status_box, text="INITIALIZING SYSTEM...", font=("Consolas", 10), text_color="#666666")
-        self.status_lbl.pack(padx=10)
+        # [右下角] 状态信息
+        self.status_lbl = ctk.CTkLabel(self, text="INITIALIZING...", font=("Consolas", 11), text_color="#888888")
+        self.status_lbl.place(relx=0.95, rely=0.92, anchor="se")
 
-        # --- 层级 4: 底部极细进度条 ---
+        # [底部] 极细进度条
         self.bar = ctk.CTkProgressBar(
             self, 
             width=w, 
@@ -1087,74 +1096,78 @@ class SplashScreen(ctk.CTkToplevel):
         threading.Thread(target=self.run_boot_sequence, daemon=True).start()
 
     def update_status(self, text):
-        """更新右下角状态文字"""
         self.status_lbl.configure(text=text.upper())
         self.update()
 
     def log(self, text):
-        """背景日志"""
+        """高速日志写入"""
         self.console.configure(state="normal")
-        timestamp = f"[{time.time() % 1000:06.2f}]"
-        self.console.insert("end", f"{timestamp} {text}\n")
+        # 移除时间戳的毫秒部分，让它看起来更像原始数据流
+        self.console.insert("end", f"> {text}\n")
         self.console.see("end") 
         self.console.configure(state="disabled")
         self.update()
 
     def run_boot_sequence(self):
         try:
+            # [修改] 极客风格的大量虚假日志，制造刷屏感
             boot_logs = [
-                "BOOT_SEQUENCE_STARTED...",
-                "Loading kernel modules: ntfs, exfat, cuda_drv...",
-                "Allocating shared memory segment (4096KB)...",
-                "Initializing CTk appearance mode: 'System'...",
-                "Mounting virtual filesystem...",
-                "Checking environment variables...",
-                "CPU_INSTRUCTION_SET: AVX2 detected",
-                "Loading neural engine weights...",
-                "Prefetching UI assets..."
+                "KERNEL: Initializing memory manager...",
+                "ACPI: Core revision 2024.11",
+                "PCI: Probing hardware bus...",
+                "VIDEO: NVIDIA CUDA Driver detected (v12.4)",
+                "AUDIO: Initializing WASAPI subsystem...",
+                "NET: Binding local loopback interface...",
+                "FS: Mounting virtual file system (VFS)...",
+                "SECURITY: Verifying digital signatures...",
+                "MODULE: Loading 'customtkinter' (UI)...",
+                "MODULE: Loading 'pillow' (IMG)...",
+                "MODULE: Loading 'numpy' (MATH)...",
+                "THREAD: Spawning worker pool (16 threads)...",
+                "IO: Checking disk write permissions...",
+                "MEM: Allocating heap text segment...",
+                "GPU: Checking NVENC capabilities...",
+                "UI: Pre-caching font glyphs...",
+                "UI: Calculating DPI scaling factors...",
+                "SYS: Power management policy set to 'High Performance'"
             ]
 
-            # 阶段 1: 视觉刷屏
-            self.update_status("System Check...")
-            for line in boot_logs:
+            # 阶段 1: 疯狂刷屏
+            self.update_status("System Boot...")
+            for i, line in enumerate(boot_logs):
                 self.log(line)
-                time.sleep(0.01 + random.random() * 0.04)
+                # 前半段极快，后半段稍微慢一点点，制造节奏感
+                delay = 0.005 if i < 10 else 0.02 
+                time.sleep(delay)
 
-            self.bar.set(0.2)
+            self.bar.set(0.3)
             
-            # 阶段 2: 真实业务
-            self.update_status("Verifying Dependencies...")
-            self.log(">> EXEC: check_dependencies()")
+            # 阶段 2: 真实业务 (穿插日志)
+            self.update_status("Checking Deps...")
+            self.log("EXEC: check_dependencies()")
             check_and_install_dependencies()
-            self.log(">> DONE: Dependencies verified.")
-            self.bar.set(0.4)
+            self.log("STATUS: OK.")
+            self.bar.set(0.5)
             
-            self.update_status("Loading Core Engine...")
-            self.log(">> EXEC: verify_ffmpeg_binary()")
+            self.update_status("Verifying Engine...")
+            self.log("EXEC: verify_ffmpeg_binary()")
+            # 模拟一点点停顿
             time.sleep(0.1)
-            self.log(f">> DETECTED: {FFMPEG_PATH}")
-            self.bar.set(0.6)
+            self.log(f"FOUND: {FFMPEG_PATH}")
+            self.bar.set(0.7)
             
-            self.update_status("Scanning Storage...")
-            self.log(">> EXEC: DiskManager.probe()")
+            self.update_status("Scanning Disks...")
+            self.log("EXEC: DiskManager.probe_hardware()")
             DiskManager.get_windows_drives()
-            self.log(">> DONE: Storage topology mapped.")
-            self.bar.set(0.8)
+            self.log("STATUS: Storage Map Updated.")
+            self.bar.set(0.9)
             
-            # 阶段 3: 收尾
-            self.update_status("Launching...")
-            closing_logs = [
-                "Starting main event loop...",
-                "Binding socket 127.0.0.1:53333...",
-                "Attaching signal handlers...",
-                "READY."
-            ]
-            for line in closing_logs:
-                self.log(line)
-                time.sleep(0.05)
+            # 阶段 3: 启动
+            self.update_status("Ready.")
+            self.log("SYSTEM READY. HANDING OVER TO MAIN LOOP.")
+            time.sleep(0.3) # 稍微停顿让人看清最后一行
             
             self.bar.set(1.0)
-            time.sleep(0.2)
             
             # 切换
             self.root.deiconify()
