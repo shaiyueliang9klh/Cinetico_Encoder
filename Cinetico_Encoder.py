@@ -298,7 +298,7 @@ class DiskManager:
         try:
             drive_letter = os.path.splitdrive(os.path.abspath(path))[0].upper()
             # 这里复用你原有的 ctypes 逻辑，为节省篇幅，核心检测代码保持不变
-            # 建议将原 is_drive_ssd 的核心 try...except 块搬进来
+            # 建议将原 DiskManager.is_ssd 的核心 try...except 块搬进来
             # 如果为了简化，这里暂时返回 True，请务必保留原有的 DeviceIoControl 代码
             return True 
         except: return False
@@ -1291,7 +1291,9 @@ class UltraEncoderApp(DnDWindow):
     def on_closing(self):
         """窗口关闭事件处理"""
         if self.running:
-            if not lambda: ModernAlert(self, "退出", "任务正在进行中，确定要退出？"): return
+            if not messagebox.askokcancel("退出", "任务正在进行中，确定强制退出吗？"):
+                return
+
         self.stop_flag = True
         self.running = False
         self.executor.shutdown(wait=False) 
@@ -1320,20 +1322,20 @@ class UltraEncoderApp(DnDWindow):
         self.update_monitor_layout()
 
     def scan_disk(self):
-    """[Refactored] 使用新的评分系统"""
-    if self.manual_cache_path:
-        path = self.manual_cache_path
-    else:
-        # 传入当前队列的第一个文件作为参考源（如果有）
-        ref_file = self.file_queue[0] if self.file_queue else None
-        path = DiskManager.get_best_cache_path(ref_file)
+        """[Refactored] 使用新的评分系统"""
+        if self.manual_cache_path:
+            path = self.manual_cache_path
+        else:
+            # 传入当前队列的第一个文件作为参考源（如果有）
+            ref_file = self.file_queue[0] if self.file_queue else None
+            path = DiskManager.get_best_cache_path(ref_file)
 
-    cache_dir = os.path.join(path, "_Ultra_Smart_Cache_")
-    os.makedirs(cache_dir, exist_ok=True)
-    self.temp_dir = cache_dir
+        cache_dir = os.path.join(path, "_Ultra_Smart_Cache_")
+        os.makedirs(cache_dir, exist_ok=True)
+        self.temp_dir = cache_dir
 
-    # 更新 UI
-    self.safe_update(self.btn_cache.configure, text=f"缓存池: {path[:3]} (智能托管)")
+        # 更新 UI
+        self.safe_update(self.btn_cache.configure, text=f"缓存池: {path[:3]} (智能托管)")
 
     def select_cache_folder(self):
         """手动选择缓存目录"""
@@ -1949,7 +1951,7 @@ class UltraEncoderApp(DnDWindow):
         """
         total_ram_limit = MAX_RAM_LOAD_GB 
         current_ram_usage = 0.0            
-        is_cache_ssd = is_drive_ssd(self.temp_dir) or (self.manual_cache_path and is_drive_ssd(self.manual_cache_path))
+        is_cache_ssd = DiskManager.is_ssd(self.temp_dir) or (self.manual_cache_path and DiskManager.is_ssd(self.manual_cache_path))
         io_concurrency = self.current_workers if is_cache_ssd else 1
         self.io_executor = ThreadPoolExecutor(max_workers=io_concurrency)
         
@@ -1972,7 +1974,7 @@ class UltraEncoderApp(DnDWindow):
                 for f in self.file_queue:
                     card = self.task_widgets[f]
                     if card.status_code == STATE_PENDING:
-                        source_is_ssd = is_drive_ssd(f)
+                        source_is_ssd = DiskManager.is_ssd(f)
                         if source_is_ssd:
                             card.source_mode = "DIRECT"
                             card.status_code = STATE_READY 
