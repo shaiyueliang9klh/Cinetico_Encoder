@@ -1031,8 +1031,8 @@ class SplashScreen(ctk.CTkToplevel):
         # 4. UI 元素布局
         # LOGO / 标题
         ctk.CTkLabel(self.inner_frame, text="CINÉTICO", font=("Segoe UI Black", 48), text_color="#FFFFFF").pack(pady=(60, 0))
-        ctk.CTkLabel(self.inner_frame, text="ENCODER PRO", font=("Arial", 14, "bold"), text_color=COLOR_ACCENT, letter_spacing=5).pack(pady=(0, 40))
-        
+        ctk.CTkLabel(self.inner_frame, text="E N C O D E R   P R O", font=("Arial", 14, "bold"), text_color=COLOR_ACCENT).pack(pady=(0, 40))
+
         # 状态文字 (右下角极简风格)
         self.status = ctk.CTkLabel(self.inner_frame, text="INITIALIZING...", font=("Consolas", 10), text_color="#666666")
         self.status.pack(side="bottom", anchor="e", padx=30, pady=(0, 5))
