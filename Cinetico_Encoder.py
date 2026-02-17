@@ -999,26 +999,24 @@ class ModernAlert(ctk.CTkToplevel):
 
 class SplashScreen(ctk.CTkToplevel):
     """
-    [PyArchitect Design v7.0] "Cinematic Giant" 影院级启动页
-    - 尺寸：960x540 (16:9 qHD)，大幅提升视觉张力。
-    - 排印：超大字号 (90pt) Logo，极具压迫感。
-    - 视觉：保留 ComfyUI 风格的幽灵控制台背景。
+    [PyArchitect Design v8.0] "Cyberpunk Golden Ratio" 黄金分割启动页
+    - 布局：左侧 0.618 黄金分割点对齐，非对称美学。
+    - 排印：主副标题左对齐，字号平衡，增加品牌色竖线锚点。
+    - 细节：找回右下角状态小字，形成对角线视觉平衡。
     """
     def __init__(self, root_app):
         super().__init__(root_app)
         self.root = root_app
         self.root.withdraw()
 
-        # 1. 窗口属性
+        # 1. 窗口属性 (960x540 宽屏)
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         
-        # [改动] 尺寸大幅提升，由小家碧玉变为大家闺秀
-        w, h = 960, 540 
+        w, h = 960, 540
         ws, hs = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f'{w}x{h}+{int((ws-w)/2)}+{int((hs-h)/2)}')
         
-        # 设定极深色背景
         self.bg_color = "#0B0B0B"
         self.configure(fg_color=self.bg_color)
         
@@ -1026,39 +1024,57 @@ class SplashScreen(ctk.CTkToplevel):
         raw_accent = COLOR_ACCENT
         self.accent_color = raw_accent[1] if isinstance(raw_accent, tuple) else raw_accent
 
-        # --- 层级 1: 背景日志流 ---
+        # --- 层级 1: 背景日志流 (右侧留白处看代码更清晰) ---
         self.console = ctk.CTkTextbox(
             self, 
             fg_color="transparent", 
-            text_color="#2A2A2A", # 稍微再暗一点，防止抢了巨型Logo的风头
-            font=("Consolas", 11), # 字体稍微加大
+            text_color="#1F1F1F", # 极暗，不抢戏
+            font=("Consolas", 10),
             state="disabled",
             activate_scrollbars=False
         )
         self.console.place(relx=0, rely=0, relwidth=1, relheight=1)
         
-        # --- 层级 2: 前景 Logo 区 ---
-        # [改动] 高度增加以适应更大的字体
-        self.center_box = ctk.CTkFrame(
+        # --- 层级 2: 左侧视觉锚点 (黄金分割布局) ---
+        # 黄金分割点约在 0.382 或 0.618，这里我们在左侧 10% 处开始，占据 40% 宽度
+        
+        # 2.1 品牌色竖线 (Visual Anchor)
+        self.anchor_line = ctk.CTkFrame(self, width=6, height=160, fg_color=self.accent_color, corner_radius=0)
+        self.anchor_line.place(relx=0.08, rely=0.4, anchor="w") # 垂直居中偏上一点
+        
+        # 2.2 标题容器 (紧贴竖线右侧)
+        # 使用 Frame 来包裹文字，背景设为黑色半透明(实际上用纯黑遮挡)，以确保文字清晰
+        self.text_box = ctk.CTkFrame(
             self, 
             fg_color=self.bg_color, 
             corner_radius=0,
-            height=200 
+            width=500,
+            height=180
         )
-        self.center_box.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0)
+        # 放在竖线右边一点点
+        self.text_box.place(relx=0.09, rely=0.4, anchor="w")
 
-        # 主标题 [改动] 字号巨大化
-        title_font = ("Segoe UI Black", 90) if platform.system() == "Windows" else ("Arial Black", 90)
-        ctk.CTkLabel(self.center_box, text="CINÉTICO", font=title_font, text_color="#FFFFFF").pack(pady=(25, 0))
+        # 主标题 (左对齐)
+        title_font = ("Segoe UI Black", 64) if platform.system() == "Windows" else ("Arial Black", 64)
+        ctk.CTkLabel(self.text_box, text="CINÉTICO", font=title_font, text_color="#FFFFFF").place(x=20, y=30)
         
-        # 副标题 [改动] 字号微调
-        ctk.CTkLabel(self.center_box, text="E N C O D E R   P R O", font=("Segoe UI", 16, "bold"), text_color=self.accent_color).pack(pady=(0, 25))
+        # 副标题 (左对齐，拉开字间距以对齐主标题视觉宽度)
+        # "E  N  C  O  D  E  R     P  R  O"
+        sub_font = ("Segoe UI", 14, "bold")
+        ctk.CTkLabel(self.text_box, text="E  N  C  O  D  E  R     P  R  O", font=sub_font, text_color=self.accent_color).place(x=24, y=120)
 
-        # --- 层级 3: 底部进度条 ---
+        # --- 层级 3: 右下角状态信息 (对角线平衡) ---
+        self.status_box = ctk.CTkFrame(self, fg_color=self.bg_color, corner_radius=0, height=30)
+        self.status_box.place(relx=0.95, rely=0.92, anchor="se")
+        
+        self.status_lbl = ctk.CTkLabel(self.status_box, text="INITIALIZING SYSTEM...", font=("Consolas", 10), text_color="#666666")
+        self.status_lbl.pack(padx=10)
+
+        # --- 层级 4: 底部极细进度条 ---
         self.bar = ctk.CTkProgressBar(
             self, 
             width=w, 
-            height=4, # 稍微加厚一点点
+            height=3, 
             progress_color=self.accent_color, 
             fg_color="#1A1A1A", 
             border_width=0, 
@@ -1067,14 +1083,16 @@ class SplashScreen(ctk.CTkToplevel):
         self.bar.place(relx=0, rely=0.99, anchor="sw", relwidth=1)
         self.bar.set(0)
         
-        # 强制渲染
         self.update()
-        
-        # 启动
         threading.Thread(target=self.run_boot_sequence, daemon=True).start()
 
+    def update_status(self, text):
+        """更新右下角状态文字"""
+        self.status_lbl.configure(text=text.upper())
+        self.update()
+
     def log(self, text):
-        """向背景控制台追加日志并滚动"""
+        """背景日志"""
         self.console.configure(state="normal")
         timestamp = f"[{time.time() % 1000:06.2f}]"
         self.console.insert("end", f"{timestamp} {text}\n")
@@ -1097,6 +1115,7 @@ class SplashScreen(ctk.CTkToplevel):
             ]
 
             # 阶段 1: 视觉刷屏
+            self.update_status("System Check...")
             for line in boot_logs:
                 self.log(line)
                 time.sleep(0.01 + random.random() * 0.04)
@@ -1104,22 +1123,26 @@ class SplashScreen(ctk.CTkToplevel):
             self.bar.set(0.2)
             
             # 阶段 2: 真实业务
+            self.update_status("Verifying Dependencies...")
             self.log(">> EXEC: check_dependencies()")
             check_and_install_dependencies()
             self.log(">> DONE: Dependencies verified.")
             self.bar.set(0.4)
             
+            self.update_status("Loading Core Engine...")
             self.log(">> EXEC: verify_ffmpeg_binary()")
             time.sleep(0.1)
             self.log(f">> DETECTED: {FFMPEG_PATH}")
             self.bar.set(0.6)
             
+            self.update_status("Scanning Storage...")
             self.log(">> EXEC: DiskManager.probe()")
             DiskManager.get_windows_drives()
             self.log(">> DONE: Storage topology mapped.")
             self.bar.set(0.8)
             
             # 阶段 3: 收尾
+            self.update_status("Launching...")
             closing_logs = [
                 "Starting main event loop...",
                 "Binding socket 127.0.0.1:53333...",
