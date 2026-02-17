@@ -655,9 +655,10 @@ class TaskCard(ctk.CTkFrame):
 # [Module 3.5] Help Window (Ported from v0.9.6)
 # [修复版] 已适配 Light/Dark 双色模式
 # =========================================================================
+# [Module 3.5] Help Window (Fix & Optimization)
 class HelpWindow(ctk.CTkToplevel):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, master, info=None, *args, **kwargs):
+        super().__init__(master, *args, **kwargs)
         self.geometry("1150x900") 
         self.title("Cinético - Technical Guide")
         self.lift()
@@ -672,15 +673,14 @@ class HelpWindow(ctk.CTkToplevel):
         self.FONT_BODY_EN = ("Segoe UI", 13)         
         self.FONT_BODY_CN = ("微软雅黑", 13)         
         
-        # --- [修复核心] 颜色配置 (浅色模式, 深色模式) ---
-        # 现在它们是元组了，CTK 会自动根据当前模式选择颜色
-        self.COL_BG = ("#F3F3F3", "#121212")        # 背景: 浅灰 / 深黑
-        self.COL_CARD = ("#FFFFFF", "#1E1E1E")      # 卡片: 纯白 / 深灰
-        self.COL_TEXT_HI = ("#333333", "#FFFFFF")   # 标题: 深黑 / 纯白
-        self.COL_TEXT_MED = ("#555555", "#CCCCCC")  # 正文: 深灰 / 浅灰
-        self.COL_TEXT_LOW = ("#888888", "#888888")  # 弱文: 灰色 / 灰色
-        self.COL_ACCENT = ("#3B8ED0", "#3B8ED0")    # 强调: 蓝色 (保持一致)
-        self.COL_SEP = ("#E0E0E0", "#333333")       # 分割线: 浅灰 / 深灰
+        # --- 颜色配置 ---
+        self.COL_BG = ("#F3F3F3", "#121212")
+        self.COL_CARD = ("#FFFFFF", "#1E1E1E")
+        self.COL_TEXT_HI = ("#333333", "#FFFFFF")
+        self.COL_TEXT_MED = ("#555555", "#CCCCCC")
+        self.COL_TEXT_LOW = ("#888888", "#888888")
+        self.COL_ACCENT = ("#3B8ED0", "#3B8ED0")
+        self.COL_SEP = ("#E0E0E0", "#333333")
 
         self.configure(fg_color=self.COL_BG)
 
@@ -697,92 +697,32 @@ class HelpWindow(ctk.CTkToplevel):
         self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.scroll.pack(fill="both", expand=True, padx=30, pady=(0, 30))
 
-        # [智能硬件建议模块]
+        # [智能硬件建议模块] - 修复逻辑：如果有 info 就显示，没有就显示默认
         self.add_section_title("0. Smart Optimization Guide", "智能并发设置建议")
-        self.add_desc_text("Based on your current hardware configuration.\n根据您当前的硬件配置，以下是防止卡顿并最大化效率的推荐设置。")
+        self.add_desc_text("Based on your current hardware configuration.\n根据您当前的硬件配置，以下是推荐设置。")
         
-        # 获取建议
-        cpu_advice, gpu_advice = self.get_hardware_advice()
-        
-        self.add_item_block(
-            "CPU Encoding Mode", "CPU 纯软解压制",
-            f"Strategy for multi-core processors.\n{cpu_advice['en']}",
-            f"针对多核处理器的策略。\n建议：{cpu_advice['cn']}"
-        )
-        self.add_item_block(
-            "GPU Acceleration Mode", "硬件加速压制",
-            f"Based on NVENC availability.\n{gpu_advice['en']}",
-            f"基于 NVENC 可用性。\n建议：{gpu_advice['cn']}"
-        )
+        if info:
+            self.add_item_block(
+                "Detected Hardware / 检测结果", "",
+                f"{info.get('cpu_desc_en', '')}\n{info.get('gpu_desc_en', '')}",
+                f"{info.get('cpu_desc_cn', '')}\n{info.get('gpu_desc_cn', '')}"
+            )
+            self.add_item_block(
+                "Recommendation / 推荐并发", "",
+                f"Optimal Worker Count: {info.get('rec_worker', '2')}",
+                f"建议将并发数设置为: {info.get('rec_worker', '2')}"
+            )
+        else:
+             self.add_item_block("Info Unavailable", "信息不可用", "Hardware scan failed.", "无法检测硬件信息。")
 
         # [功能详解模块]
         self.add_section_title("I. Functional Modules Detail", "功能模块详解")
-        
         self.add_sub_header("1. Core Processing / 核心处理")
-        self.add_item_block("GPU ACCEL", "硬件加速", "Uses NVIDIA NVENC. Max throughput.", "调用 NVIDIA NVENC 专用电路。显著提升吞吐量。")
-        self.add_item_block("HYBRID", "异构分流", "Force CPU Decoding + GPU Encoding.", "强制 CPU 解码 + GPU 编码，平衡负载。")
-
-        self.add_sub_header("2. Codec Standards / 编码标准")
-        self.add_item_block("H.264 (AVC)", "", "Max compatibility.", "广泛支持，兼容性最好。")
-        self.add_item_block("H.265 (HEVC)", "", "High compression ratio (50% less size).", "高压缩比，同画质体积减半。")
-        self.add_item_block("AV1", "", "Next-gen format. Extreme compression.", "新一代格式，极限压缩率，需硬件支持。")
-
-        self.add_separator()
-        self.add_sub_header("2.5 Color Depth / 色彩深度")
-        self.add_item_block("8-BIT", "Standard", "16.7M colors. Standard compatibility.", "1670万色，标准兼容性。")
-        self.add_item_block("10-BIT", "High Color", "1.07B colors. No color banding.", "10.7亿色，消除色彩断层 (推荐存档使用)。")
-
-        self.add_sub_header("3. Quality Control / 画质控制")
-        self.add_item_block("CRF (CPU)", "Constant Rate Factor", "Dynamic bitrate based on complexity.\nRange: 18-28 (Lower is better).", "基于画面复杂度的动态码率。\n范围: 18-28 (数值越小画质越好)。")
-        self.add_item_block("CQ (GPU)", "Constant Quantization", "Fixed quantization step.\nRange: 20-30 (Requires higher value than CRF).", "固定量化参数。\n范围: 20-30 (需设定比 CRF 更大的数值)。")
-
-        # [核心架构解析]
-        self.add_separator()
-        self.add_section_title("II. Core Architecture", "核心架构解析")
-        self.add_item_block("1. Zero-Copy Loopback", "零拷贝环回", "Maps video streams to RAM to bypass disk IO latency.", "将视频流映射至 RAM，绕过机械硬盘寻道延迟。")
-        self.add_item_block("2. Adaptive Storage", "自适应分层存储", "Small files -> RAM. Large files -> SSD Cache.", "小文件驻留内存，大文件调度至 SSD。")
+        self.add_item_block("GPU ACCEL", "硬件加速", "Uses NVIDIA NVENC. Max throughput.", "调用 NVIDIA NVENC 专用电路。")
+        self.add_item_block("HYBRID", "异构分流", "Force CPU Decoding + GPU Encoding.", "强制 CPU 解码 + GPU 编码。")
 
         ctk.CTkFrame(self.scroll, height=60, fg_color="transparent").pack()
 
-    def get_hardware_advice(self):
-        # 移植自 0.9.6 的智能检测逻辑 (无需修改)
-        try: cpu_count = os.cpu_count() or 4
-        except: cpu_count = 4
-            
-        if cpu_count >= 16:
-            rec_cpu = 3 
-            cpu_msg_en = f"Detected {cpu_count} threads. Recommendation: [3] tasks to prevent cache thrashing."
-            cpu_msg_cn = f"检测到 {cpu_count} 线程。推荐：[3] 个并发 (防止资源争抢)。"
-        elif cpu_count >= 8:
-            rec_cpu = 2
-            cpu_msg_en = f"Detected {cpu_count} threads. Recommendation: [2] tasks."
-            cpu_msg_cn = f"检测到 {cpu_count} 线程。推荐：[2] 个并发 (平衡点)。"
-        else:
-            rec_cpu = 1
-            cpu_msg_en = "Basic CPU detected. Recommendation: [1] task."
-            cpu_msg_cn = "CPU 性能有限。推荐：[1] 个并发 (保稳定)。"
-
-        gpu_name = "Unknown"
-        is_dual_nvenc = False
-        try:
-            if platform.system() == "Windows":
-                cmd = ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]
-                si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                gpu_name = subprocess.check_output(cmd, startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW, encoding="utf-8").strip()
-                if any(x in gpu_name.upper() for x in ["4090", "4080", "TITAN", "A6000", "A100"]):
-                    is_dual_nvenc = True
-        except: pass
-        
-        if is_dual_nvenc:
-            gpu_msg_en = f"Dual-NVENC Card ({gpu_name}). Rec: [3] or [4]."
-            gpu_msg_cn = f"双编码芯片显卡 ({gpu_name})。推荐：[3] 或 [4]。"
-        else:
-            gpu_msg_en = f"Single-NVENC Card ({gpu_name}). Rec: [2]."
-            gpu_msg_cn = f"单编码芯片显卡 ({gpu_name})。推荐：[2]。"
-
-        return {"en": cpu_msg_en, "cn": cpu_msg_cn}, {"en": gpu_msg_en, "cn": gpu_msg_cn}
-
-    # [修复] 使用双色变量 self.COL_SEP
     def add_separator(self):
         ctk.CTkFrame(self.scroll, height=2, fg_color=self.COL_SEP).pack(fill="x", padx=20, pady=50)
         
@@ -829,6 +769,15 @@ class UltraEncoderApp(DnDWindow):
             if self.winfo_exists(): func(*args, **kwargs)
         except Exception: pass
     
+    def preload_help_window(self):
+        """预加载帮助窗口"""
+        try:
+            # [修改] 传入 self.hardware_info
+            self.help_window = HelpWindow(self, info=getattr(self, 'hardware_info', None)) 
+            self.help_window.withdraw()
+            self.help_window.protocol("WM_DELETE_WINDOW", self.hide_help_window)
+        except: pass
+
     def scroll_to_card(self, widget):
         """滚动列表以显示当前处理的卡片"""
         try:
@@ -846,10 +795,75 @@ class UltraEncoderApp(DnDWindow):
                     self.after(100, lambda: self.scroll._parent_canvas.yview_moveto(target_pos))
         except: pass
     
+    def detect_hardware_limit(self):
+        """
+        [优化] 启动时检测硬件，返回推荐并发数。
+        优化逻辑：NVIDIA 消费级显卡限制为 3，高性能 CPU 可适当增加。
+        """
+        recomm_workers = 2
+        cpu_msg = ""
+        gpu_msg = ""
+
+        # --- CPU 检测 ---
+        try:
+            cpu_count = os.cpu_count() or 4
+        except:
+            cpu_count = 4
+
+        # 稍微激进一点的 CPU 策略
+        if cpu_count >= 16:
+            cpu_workers = 4 # 只有非常高端的 CPU 才推荐 4 并发，防止系统卡死
+            cpu_msg = f"High-End CPU ({cpu_count} threads)."
+        elif cpu_count >= 8:
+            cpu_workers = 3
+            cpu_msg = f"Modern CPU ({cpu_count} threads)."
+        else:
+            cpu_workers = 2
+            cpu_msg = f"Standard CPU ({cpu_count} threads)."
+
+        # --- GPU 检测 ---
+        has_nvidia = False
+        gpu_workers = 2
+        
+        sys_plat = platform.system()
+        if sys_plat == "Windows":
+            try:
+                # 简单检测 nvidia-smi 存在即可
+                subprocess.run("nvidia-smi", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                has_nvidia = True
+                # GeForce 驱动通常限制并发路数，3 是安全值。专业卡可以更高但为了稳妥设为 3。
+                gpu_workers = 3 
+                gpu_msg = "NVIDIA GPU Detected (NVENC)."
+            except:
+                gpu_msg = "No NVIDIA GPU detected."
+        elif sys_plat == "Darwin":
+            # Apple Silicon 媒体引擎极强，推荐 3
+            gpu_msg = "Apple Silicon / Metal."
+            gpu_workers = 3
+
+        # 决策：默认启用 GPU 则使用 GPU 推荐值
+        if has_nvidia or sys_plat == "Darwin":
+            recomm_workers = gpu_workers
+        else:
+            recomm_workers = cpu_workers
+
+        self.hardware_info = {
+            "rec_worker": str(recomm_workers),
+            "cpu_desc_en": cpu_msg,
+            "cpu_desc_cn": cpu_msg, 
+            "gpu_desc_en": gpu_msg,
+            "gpu_desc_cn": gpu_msg
+        }
+        
+        return str(recomm_workers)
+
     def __init__(self):
         super().__init__()
         self.title("Cinético_Encoder")
         self.geometry("1300x900")
+        self.configure(fg_color=COLOR_BG_MAIN)
+        self.minsize(1200, 850) 
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         # 初始化界面颜色
         self.configure(fg_color=COLOR_BG_MAIN)
@@ -876,9 +890,16 @@ class UltraEncoderApp(DnDWindow):
         self.temp_files = set() 
         self.finished_tasks_count = 0
         
+        # [修改] 启动 UI 构建前，先计算推荐并发数
+        rec_worker = self.detect_hardware_limit()
+
         # 启动 UI 构建
-        self.setup_ui() 
-        
+        self.setup_ui(default_worker=rec_worker) # 传递参数
+        self.finished_tasks_count = 0
+
+        # [修改 1] 启动 UI 构建前，先计算推荐并发数
+        rec_worker = self.detect_hardware_limit()
+
         # 启动本地内存文件流服务器
         self.global_server, self.global_port = start_global_server()
         
@@ -1037,9 +1058,7 @@ class UltraEncoderApp(DnDWindow):
 
     def sys_check(self):
         """启动时系统环境检查"""
-        if not check_ffmpeg():
-            messagebox.showerror("错误", "找不到 FFmpeg！")
-            return
+        # check_ffmpeg() # 可以注释掉这行，前面已经查过了
         threading.Thread(target=self.scan_disk, daemon=True).start()
         self.update_monitor_layout()
 
@@ -1078,12 +1097,19 @@ class UltraEncoderApp(DnDWindow):
         elif val <= 33: return "💾 低码率 / Low Bitrate (节省空间)"
         else: return "🧱 预览级 / Proxy (马赛克严重)"
 
-    def setup_ui(self):
+    def setup_ui(self, default_worker="2"):
         """构建主界面 UI 布局"""
         SIDEBAR_WIDTH = 420 
         self.grid_columnconfigure(0, weight=0, minsize=SIDEBAR_WIDTH)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
+
+        # [修改] 使用传入的推荐值初始化
+        self.priority_var = ctk.StringVar(value="HIGH / 高优先") 
+        # [修改 4] 使用传入的推荐值初始化变量
+        self.worker_var = ctk.StringVar(value=default_worker) 
+        self.crf_var = ctk.IntVar(value=28)
+        self.codec_var = ctk.StringVar(value="H.264")
         
         # --- 左侧控制面板 ---
         left = ctk.CTkFrame(self, fg_color=COLOR_PANEL_LEFT, corner_radius=0, width=SIDEBAR_WIDTH)
@@ -1164,19 +1190,22 @@ class UltraEncoderApp(DnDWindow):
         BTN_ON_TEXT = ("#FFFFFF", "#FFFFFF")
 
         def update_btn_visuals():
-            """根据变量状态刷新按钮样式"""
             is_gpu = self.gpu_var.get()
             self.btn_gpu.configure(fg_color=BTN_ON_BG if is_gpu else BTN_OFF_BG, text_color=BTN_ON_TEXT if is_gpu else BTN_OFF_TEXT)
             
             is_meta = self.keep_meta_var.get()
             self.btn_meta.configure(fg_color=BTN_ON_BG if is_meta else BTN_OFF_BG, text_color=BTN_ON_TEXT if is_meta else BTN_OFF_TEXT)
             
-            # 异构分流逻辑：如果未开启 GPU，则禁用此选项
-            is_hybrid = self.hybrid_var.get()
-            if not is_gpu: 
-                self.btn_hybrid.configure(state="disabled", fg_color=("#F5F5F5", "#222222"), text_color=("#AAAAAA", "#555555"))
-            else: 
-                self.btn_hybrid.configure(state="normal", fg_color=BTN_ON_BG if is_hybrid else BTN_OFF_BG, text_color=BTN_ON_TEXT if is_hybrid else BTN_OFF_TEXT)
+            # [关键修复] Mac 系统下，强制禁用，不允许被 GPU 开关逻辑复活
+            if platform.system() == "Darwin":
+                self.btn_hybrid.configure(state="disabled", fg_color=("#F0F0F0", "#222222"), text_color=("#AAAAAA", "#555555"))
+            else:
+                # Windows 下才允许根据 GPU 状态切换
+                is_hybrid = self.hybrid_var.get()
+                if not is_gpu: 
+                    self.btn_hybrid.configure(state="disabled", fg_color=("#F5F5F5", "#222222"), text_color=("#AAAAAA", "#555555"))
+                else: 
+                    self.btn_hybrid.configure(state="normal", fg_color=BTN_ON_BG if is_hybrid else BTN_OFF_BG, text_color=BTN_ON_TEXT if is_hybrid else BTN_OFF_TEXT)
             
             is_10bit = self.depth_10bit_var.get()
             self.btn_10bit.configure(fg_color=BTN_ON_BG if is_10bit else BTN_OFF_BG, text_color=BTN_ON_TEXT if is_10bit else BTN_OFF_TEXT)
