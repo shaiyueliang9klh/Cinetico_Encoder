@@ -1441,6 +1441,10 @@ class UltraEncoderApp(DnDWindow):
 
     def add_list(self, files):
         """将文件添加到任务队列，并执行智能排序"""
+        # [PyArchitect Fix] 拖入新文件时，如果当前是"完成"状态，重置为"压制"状态
+        if not self.running:
+            self.reset_ui_state()
+
         with self.queue_lock: 
             existing_paths = set(os.path.normpath(os.path.abspath(f)) for f in self.file_queue)
             new_added = False
@@ -2042,6 +2046,20 @@ class UltraEncoderApp(DnDWindow):
         self.btn_clear.configure(state="normal")
         self.update_monitor_layout(force_reset=True)
 
+    def set_completion_state(self):
+        """
+        [PyArchitect Added] 设置任务全部完成后的 UI 状态 (绿色视觉反馈)
+        """
+        self.btn_action.configure(
+            text="DONE / 完成", 
+            fg_color=COLOR_SUCCESS, 
+            hover_color=COLOR_SUCCESS,  # 保持绿色，不再变色
+            state="normal"
+        )
+        self.lbl_run_status.configure(text="✅ 队列处理完毕")
+        # 允许用户点击绿色按钮来重置界面
+        self.btn_action.configure(command=self.reset_ui_state)
+
     def get_dur(self, path):
         """获取视频时长 (秒)"""
         try:
@@ -2230,16 +2248,17 @@ class UltraEncoderApp(DnDWindow):
         self.running = False
         
         if not self.stop_flag:
-            # 正常完成
+            # [PyArchitect Fix] 正常完成逻辑：播放动画 + 切换绿色完成状态
             self.safe_update(self.launch_fireworks)
             if self.test_mode:
-                self.safe_update(self._show_test_report) # 抽离了报告逻辑
+                self.safe_update(self._show_test_report)
+            
+            # 这里不再调用 reset_ui_state，而是调用 set_completion_state
+            self.safe_update(self.set_completion_state)
         else:
-            # 被用户强制停止
+            # [PyArchitect Fix] 用户强制停止逻辑：提示 + 重置回初始状态
             self.safe_update(self.show_toast, "任务已手动停止", "🛑")
-
-        # [关键修复] 无论正常完成还是停止，都要重置 UI 按钮状态
-        self.safe_update(self.reset_ui_state)
+            self.safe_update(self.reset_ui_state)
 
     def _show_test_report(self):
         """显示测试报告的辅助函数"""
@@ -2485,8 +2504,8 @@ class UltraEncoderApp(DnDWindow):
                                     raw_prog = (current_us / 1000000.0) / duration
                                     if raw_prog > max_prog_reached: max_prog_reached = raw_prog
                                     
-                                    # [关键修复] 视觉进度条封顶 99%，直到文件操作彻底完成后才给 100%
-                                    # 这样避免了"进度条走完了但还在处理"的假象
+                                    # [PyArchitect Fix] 进度条平滑处理
+                                    # 1. 封顶 99%，直到进程真正退出
                                     final_prog = min(0.99, max_prog_reached)
                                     
                                     eta = "--:--"
@@ -2502,8 +2521,15 @@ class UltraEncoderApp(DnDWindow):
                                         in_proc = input_size * final_prog
                                         if in_proc > 0: ratio = (curr_size / in_proc) * 100
                                     
-                                    self.safe_update(ch_ui.update_data, fps, final_prog, eta, ratio)
-                                    self.safe_update(card.set_progress, final_prog, COLOR_ACCENT)
+                                    # [PyArchitect Fix] 状态感知：如果进度 > 98%，提示用户正在封装
+                                    if final_prog >= 0.98:
+                                        self.safe_update(ch_ui.update_data, fps, 0.99, "Finalizing...", ratio)
+                                        self.safe_update(card.set_status, "📦 封装中/Finalizing...", COLOR_ACCENT, STATE_ENCODING)
+                                        self.safe_update(card.set_progress, 0.99, COLOR_ACCENT) # 强制锁定在 99%
+                                    else:
+                                        self.safe_update(ch_ui.update_data, fps, final_prog, eta, ratio)
+                                        self.safe_update(card.set_progress, final_prog, COLOR_ACCENT)
+                                    
                                     last_ui_update_time = now
                 except: pass
             
