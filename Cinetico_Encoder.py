@@ -1526,16 +1526,25 @@ class UltraEncoderApp(DnDWindow):
         os._exit(0)
         
     def kill_all_procs(self):
-        """强制终止所有子进程"""
+        """强制终止所有子进程 (Mac/Win 双重保险)"""
+        # [关键] 遍历副本，防止在移除元素时导致列表迭代错误
         for p in list(self.active_procs): 
-            try: p.terminate(); p.kill()
+            try:
+                p.terminate()
+                if platform.system() != "Windows":
+                    p.kill() # Mac/Linux 下补刀，确保杀死
             except: pass
+            
+        self.active_procs.clear()
+        
+        # 兜底清理：杀掉残留的 ffmpeg 进程
         try: 
-            # 兜底清理：杀掉残留的 ffmpeg 进程
             if platform.system() == "Windows":
-                subprocess.run(["taskkill", "/F", "/IM", "ffmpeg.exe"], creationflags=subprocess.CREATE_NO_WINDOW)
+                subprocess.run(["taskkill", "/F", "/IM", "ffmpeg.exe"], 
+                             creationflags=subprocess.CREATE_NO_WINDOW, stderr=subprocess.DEVNULL)
             else:
-                subprocess.run(["pkill", "-f", "ffmpeg"])
+                # macOS/Linux 激进清理
+                subprocess.run(["pkill", "-9", "-f", "ffmpeg"], stderr=subprocess.DEVNULL)
         except: pass
 
     def sys_check(self):
@@ -1833,29 +1842,52 @@ class UltraEncoderApp(DnDWindow):
         self.monitor_frame.pack(fill="both", expand=True, padx=25, pady=(0, 15))
 
     def clear_all(self):
-        """重置所有任务"""
-        if self.running: return 
+        """
+        [PyArchitect Nuclear Reset] 彻底重置软件状态
+        修复: 点击重置后无法开始新任务的死锁问题
+        """
+        # 1. 先停止标志位，防止后台线程继续生成数据
+        self.stop_flag = True
+        self.running = False
         
-        # 清除 UI 元素
+        # 2. [关键] 立即杀死所有外部进程
+        self.kill_all_procs()
+        
+        # 3. [关键] 暴力重置线程池和锁 (解决卡顿的根源)
+        # 如果旧线程池还在跑，直接抛弃它，创建新的
+        try: self.executor.shutdown(wait=False)
+        except: pass
+        self.executor = ThreadPoolExecutor(max_workers=16)
+        
+        # 重置锁对象 (防止死锁)
+        self.queue_lock = threading.Lock()
+        self.slot_lock = threading.Lock()
+        
+        # 4. 清除 UI 数据
         for k, v in self.task_widgets.items(): v.destroy()
         self.task_widgets.clear()
         self.file_queue.clear()
         
-        # [关键] 彻底重置内部状态
+        # 5. 重置内部计数器和缓存
         self.finished_tasks_count = 0
         self.temp_files.clear()
         self.active_procs.clear()
         
+        # 6. 重置 UI 视觉
         self.check_placeholder()
         try: self.scroll._parent_canvas.yview_moveto(0.0)
         except: pass
         
         self.reset_ui_state()
-        self.lbl_run_status.configure(text="")
         
-        # 强制重置监控区域，防止残留
-        self.update_monitor_layout(force_reset=True)
+        # 7. 重置监控槽位索引
+        try: n = int(self.worker_var.get())
+        except: n = 2
+        self.available_indices = list(range(n))
         
+        # 8. 最后再发一次 Toast 确认
+        self.show_toast("状态已完全重置", "♻️")
+
     def update_monitor_layout(self, val=None, force_reset=False):
         """
         根据并发数动态调整右侧监控卡片的布局。
@@ -2065,24 +2097,43 @@ class UltraEncoderApp(DnDWindow):
 
     def reset_ui_state(self):
         """恢复 UI 到初始空闲状态"""
-        self.btn_action.configure(text="COMPRESS / 压制", fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER, state="normal")
+        if not self.winfo_exists(): return
+        
+        # 恢复主按钮为蓝色 "压制" 功能
+        self.btn_action.configure(
+            text="COMPRESS / 压制", 
+            fg_color=COLOR_ACCENT, 
+            hover_color=COLOR_ACCENT_HOVER, 
+            state="normal",
+            command=self.toggle_action # 恢复为开始功能
+        )
+        
         self.lbl_run_status.configure(text="") 
         self.btn_clear.configure(state="normal")
+        
+        # 强制重置监控区域
         self.update_monitor_layout(force_reset=True)
 
     def set_completion_state(self):
         """
-        [PyArchitect Added] 设置任务全部完成后的 UI 状态 (绿色视觉反馈)
+        [PyArchitect Fix] 设置任务全部完成后的 UI 状态
+        修复: 任务完成后，显式启用 Reset 按钮，防止 UI 死胡同
         """
+        if not self.winfo_exists(): return
+        
+        # 1. 设置主按钮为绿色 "完成" 状态
         self.btn_action.configure(
             text="DONE / 完成", 
             fg_color=COLOR_SUCCESS, 
-            hover_color=COLOR_SUCCESS,  # 保持绿色，不再变色
-            state="normal"
+            hover_color=COLOR_SUCCESS, 
+            state="normal",
+            command=self.reset_ui_state # 点击变成重置功能
         )
+        
+        # 2. [关键修复] 强制启用 Reset 按钮
+        self.btn_clear.configure(state="normal")
+        
         self.lbl_run_status.configure(text="✅ 队列处理完毕")
-        # 允许用户点击绿色按钮来重置界面
-        self.btn_action.configure(command=self.reset_ui_state)
 
     def get_dur(self, path):
         """获取视频时长 (秒)"""
