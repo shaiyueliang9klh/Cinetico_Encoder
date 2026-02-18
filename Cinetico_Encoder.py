@@ -318,43 +318,40 @@ import string
 import ctypes
 from typing import List, Tuple, Optional, Dict
 
-# [PyArchitect v2.3] 寻道惩罚探测系统 (Seeking Penalty Detection)
 class DiskManager:
     """
-    基于硬件寻道惩罚（Seek Penalty）逻辑的磁盘管理器。
-    这是区分 HDD 和 SSD 最可靠的底层方法，绕过了不稳定的命名和属性字段。
+    [Fixed] 跨平台磁盘管理器。
+    macOS/Linux 下不再调用 Windows API，防止 ctypes.windll 报错。
     """
     _type_cache: Dict[str, bool] = {}
 
     @classmethod
     def is_ssd(cls, path: str) -> bool:
         """
-        核心逻辑：检测磁盘是否存在寻道惩罚。
-        无寻道惩罚 = SSD (或高速闪存介质)
-        有寻道惩罚 = HDD (旋转机械结构)
+        核心逻辑：检测磁盘是否为 SSD。
+        Windows: 检查 SeekPenalty。
+        macOS/Linux: 默认返回 True (现代 Mac 几乎全系 SSD，且无法通过简单命令判断)。
         """
         if platform.system() != "Windows":
-            return True # 非 Windows 默认视为高速盘
+            return True # 非 Windows 默认视为高速盘，避免调用 PowerShell
 
-        drive_letter = os.path.splitdrive(os.path.abspath(path))[0].upper()
-        if not drive_letter: return False
-        letter = drive_letter[0] # 例如 'C'
-
-        if letter in cls._type_cache:
-            return cls._type_cache[letter]
-
-        # [工业级指令] 直接查询磁盘可靠性计数器中的 SeekPenalty 标志
-        # $false 表示没有寻道惩罚（即 SSD）
-        ps_cmd = (
-            f"$dn = (Get-Partition -DriveLetter {letter}).DiskNumber; "
-            f"(Get-Disk -Number $dn | Get-StorageReliabilityCounter).SeekPenalty"
-        )
-        
+        # --- 以下为 Windows 专用逻辑 ---
         try:
+            drive_letter = os.path.splitdrive(os.path.abspath(path))[0].upper()
+            if not drive_letter: return False
+            letter = drive_letter[0]
+
+            if letter in cls._type_cache:
+                return cls._type_cache[letter]
+
+            ps_cmd = (
+                f"$dn = (Get-Partition -DriveLetter {letter}).DiskNumber; "
+                f"(Get-Disk -Number $dn | Get-StorageReliabilityCounter).SeekPenalty"
+            )
+            
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             
-            # 执行命令并获取输出
             output = subprocess.check_output(
                 ["powershell", "-Command", ps_cmd],
                 startupinfo=startupinfo,
@@ -362,11 +359,7 @@ class DiskManager:
                 stderr=subprocess.DEVNULL
             ).decode().strip().lower()
 
-            # 如果返回 'false'，说明没有寻道惩罚，则是 SSD
-            # 如果返回 'true'，说明有寻道惩罚，则是 HDD
             is_ssd_drive = (output == "false")
-            
-            # 特殊处理：如果结果为空，尝试备用判定（SpindleSpeed）
             if not output:
                 is_ssd_drive = cls._spindle_fallback(letter)
 
@@ -374,12 +367,11 @@ class DiskManager:
             return is_ssd_drive
 
         except Exception:
-            # 最后的倔强：如果 PS 指令失败，默认判定为 HDD 确保安全
             return False
 
     @classmethod
     def _spindle_fallback(cls, letter: str) -> bool:
-        """备用方案：检测转速是否为 0"""
+        """Windows 备用方案"""
         try:
             cmd = f"(Get-PhysicalDisk | Where-Object {{ (Get-Partition -DriveLetter {letter}).DiskNumber -eq $_.DeviceId }}).SpindleSpeed"
             out = subprocess.check_output(["powershell", "-Command", cmd], creationflags=0x08000000).decode().strip()
@@ -389,60 +381,60 @@ class DiskManager:
 
     @staticmethod
     def get_windows_drives() -> List[str]:
-        """获取系统所有盘符"""
+        """获取所有盘符 (仅 Windows 有效，macOS 返回根目录)"""
+        if platform.system() != "Windows":
+            return ["/"] # macOS/Linux 返回根目录
+            
         drives = []
-        bitmask = ctypes.windll.kernel32.GetLogicalDrives()
-        for letter in string.ascii_uppercase:
-            if bitmask & 1: drives.append(f"{letter}:\\")
-            bitmask >>= 1
+        try:
+            bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+            for letter in string.ascii_uppercase:
+                if bitmask & 1: drives.append(f"{letter}:\\")
+                bitmask >>= 1
+        except Exception:
+            pass
         return drives
 
     @classmethod
     def get_best_cache_path(cls, source_file: Optional[str] = None) -> str:
         """
-        [算法 v2.3] 寻道优先权重
+        [算法 v2.4] 智能缓存路径选择 (跨平台安全版)
         """
+        # 非 Windows 环境直接返回用户主目录下的临时文件夹
+        if platform.system() != "Windows":
+            return os.path.expanduser("~/Downloads")
+
         candidates = []
         src_drive = os.path.splitdrive(os.path.abspath(source_file))[0].upper() if source_file else ""
         sys_drive = os.getenv("SystemDrive", "C:").upper()
 
         print("-" * 50)
-        print("[DiskManager] 正在基于“寻道惩罚”内核标志分析存储性能...")
+        print("[DiskManager] 正在分析存储性能...")
 
         for drive in cls.get_windows_drives():
             try:
-                # 获取空间大小
                 free_bytes = ctypes.c_ulonglong(0)
                 ctypes.windll.kernel32.GetDiskFreeSpaceExW(ctypes.c_wchar_p(drive), None, None, ctypes.pointer(free_bytes))
                 free_gb = free_bytes.value / (1024**3)
                 
-                if free_gb < 10: continue # 空间太小不考虑
+                if free_gb < 10: continue 
 
                 score = 0
                 is_ssd_device = cls.is_ssd(drive)
                 
-                # 1. 核心加分：无寻道惩罚 (SSD) 获得巨额加分
-                if is_ssd_device:
-                    score += 100000
-                
-                # 2. 空间加分：每 GB 积 1 分
+                if is_ssd_device: score += 100000
                 score += int(free_gb)
 
-                # 3. 规避项：尽量不在系统盘或源文件盘
                 if drive.startswith(sys_drive): score -= 1000
                 if src_drive and drive.startswith(src_drive): score -= 2000
 
                 candidates.append((score, drive))
-                status = "SSD (无寻道惩罚)" if is_ssd_device else "HDD (有寻道惩罚)"
-                print(f"  > {drive} | 介质: {status} | 剩余: {free_gb:.1f}GB | 评分: {score}")
             except: pass
-        
-        print("-" * 50)
         
         if not candidates: return "C:\\"
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
-
+    
 # --- 全局内存文件服务器 ---
 # 用于将内存中的视频数据 (Bytes) 通过 HTTP 协议喂给 FFmpeg，避免写盘。
 GLOBAL_RAM_STORAGE = {} 
@@ -2164,8 +2156,8 @@ class UltraEncoderApp(DnDWindow):
 
     def engine(self):
         """
-        核心调度引擎。
-        包含两级调度：IO 预读取调度 和 计算任务调度。
+        [Fixed] 核心调度引擎。
+        修复了任务自然完成后 UI 不重置、不播放动画的问题。
         """
         total_ram_limit = MAX_RAM_LOAD_GB 
         current_ram_usage = 0.0            
@@ -2178,7 +2170,7 @@ class UltraEncoderApp(DnDWindow):
             active_compute_count = 0
             current_ram_usage = 0.0
             
-            # 统计当前资源占用
+            # 1. 统计资源
             with self.queue_lock:
                 for f in self.file_queue:
                     card = self.task_widgets[f]
@@ -2187,7 +2179,7 @@ class UltraEncoderApp(DnDWindow):
                     if card.status_code in [STATE_QUEUED_IO, STATE_CACHING]: active_io_count += 1
                     elif card.status_code == STATE_ENCODING: active_compute_count += 1
             
-            # 调度 IO 任务
+            # 2. 调度 IO
             with self.queue_lock:
                 for f in self.file_queue:
                     card = self.task_widgets[f]
@@ -2212,7 +2204,7 @@ class UltraEncoderApp(DnDWindow):
                             self.io_executor.submit(self._worker_io_task, f)
                             break
             
-            # 调度计算任务
+            # 3. 调度计算
             if active_compute_count < self.current_workers:
                 with self.queue_lock:
                     for f in self.file_queue:
@@ -2224,37 +2216,45 @@ class UltraEncoderApp(DnDWindow):
                             self.safe_update(self.scroll_to_card, card)
                             if active_compute_count >= self.current_workers: break
             
-            # 检查是否全部完成
+            # 4. 检查完成状态
             all_done = True
             with self.queue_lock:
                 for f in self.file_queue:
                     if self.task_widgets[f].status_code not in [STATE_DONE, STATE_ERROR]: all_done = False; break
+            
+            # 如果全部完成且没有活动的线程，退出循环
             if all_done and active_io_count == 0 and active_compute_count == 0: break
             time.sleep(0.1) 
             
+        # --- 循环结束后的收尾工作 ---
         self.running = False
+        
         if not self.stop_flag:
+            # 正常完成
             self.safe_update(self.launch_fireworks)
-            
-            # [新增] 测试模式结果报告
             if self.test_mode:
-                orig_total = self.test_stats["orig"]
-                new_total = self.test_stats["new"]
-                
-                msg = "测试队列完成！\n\n"
-                msg += f"原视频总大小: {orig_total / (1024**3):.2f} GB\n"
-                msg += f"压制后总大小: {new_total / (1024**3):.2f} GB\n"
-                
-                if orig_total > 0:
-                    ratio = (new_total / orig_total) * 100
-                    save_rate = 100 - ratio
-                    msg += f"\n压缩比: {ratio:.2f}% (节省 {save_rate:.2f}% 空间)"
-                else:
-                    msg += "\n数据异常：原视频大小为0"
-                
-                # 弹窗显示结果
-                self.safe_update(messagebox.showinfo, "基准测试报告", msg)
-        else: self.safe_update(self.reset_ui_state)
+                self.safe_update(self._show_test_report) # 抽离了报告逻辑
+        else:
+            # 被用户强制停止
+            self.safe_update(self.show_toast, "任务已手动停止", "🛑")
+
+        # [关键修复] 无论正常完成还是停止，都要重置 UI 按钮状态
+        self.safe_update(self.reset_ui_state)
+
+    def _show_test_report(self):
+        """显示测试报告的辅助函数"""
+        orig_total = self.test_stats["orig"]
+        new_total = self.test_stats["new"]
+        msg = "测试队列完成！\n\n"
+        msg += f"原视频总大小: {orig_total / (1024**3):.2f} GB\n"
+        msg += f"压制后总大小: {new_total / (1024**3):.2f} GB\n"
+        if orig_total > 0:
+            ratio = (new_total / orig_total) * 100
+            save_rate = 100 - ratio
+            msg += f"\n压缩比: {ratio:.2f}% (节省 {save_rate:.2f}% 空间)"
+        else:
+            msg += "\n数据异常：原视频大小为0"
+        messagebox.showinfo("基准测试报告", msg)
 
     def _worker_io_task(self, task_file):
         """线程任务：IO 预读取"""
@@ -2484,7 +2484,10 @@ class UltraEncoderApp(DnDWindow):
                                     
                                     raw_prog = (current_us / 1000000.0) / duration
                                     if raw_prog > max_prog_reached: max_prog_reached = raw_prog
-                                    final_prog = min(1.0, max_prog_reached)
+                                    
+                                    # [关键修复] 视觉进度条封顶 99%，直到文件操作彻底完成后才给 100%
+                                    # 这样避免了"进度条走完了但还在处理"的假象
+                                    final_prog = min(0.99, max_prog_reached)
                                     
                                     eta = "--:--"
                                     elapsed = now - start_t
@@ -2576,7 +2579,6 @@ if __name__ == "__main__":
     try:
         if platform.system() == "Windows":
             import ctypes
-            # GetConsoleWindow 获取当前窗口句柄，ShowWindow(h, 0) 隐藏它
             hwnd = ctypes.windll.kernel32.GetConsoleWindow()
             if hwnd != 0:
                 ctypes.windll.user32.ShowWindow(hwnd, 0)
