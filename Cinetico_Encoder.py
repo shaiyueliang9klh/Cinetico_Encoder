@@ -1076,18 +1076,20 @@ class SplashScreen(ctk.CTkToplevel):
     def run_boot_sequence(self) -> None:
         """100% 真实的启动序列"""
         try:
-            # 传递 UI 更新函数给底层环境检测，实现真正的实时联动
+            # 真实检测
             self.update_status("VERIFYING DEPENDENCIES...")
             check_and_install_dependencies(status_cb=self.update_status, progress_cb=self.update_progress)
             
+            # 硬件扫描
             self.update_status("SCANNING STORAGE ARCHITECTURE...")
             self.update_progress(0.8)
             DiskManager.get_windows_drives()
             
+            # [优化点] 给予用户 0.3 秒的视觉确认时间
             self.update_status("SYSTEM READY.")
             self.update_progress(1.0)
+            time.sleep(0.3) 
             
-            # 如果一切本来就绪，这里只会闪过不到0.5秒；如果有下载，则会等待下载完毕
             self.after(0, self._finish_boot)
             
         except Exception as e:
