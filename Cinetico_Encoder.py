@@ -966,7 +966,7 @@ class HelpWindow(ctk.CTkToplevel):
 
 class ModernAlert(ctk.CTkToplevel):
     """
-    [PyArchitect] 现代扁平化模态弹窗 (类原生高颜值排版)
+    [PyArchitect] 现代扁平化模态弹窗 (重构版：类原生左右分栏排版)
     """
     def __init__(self, master: ctk.CTk, title: str, message: str, type: str = "info") -> None:
         super().__init__(master)
@@ -974,8 +974,8 @@ class ModernAlert(ctk.CTkToplevel):
         # Mac 下隐藏顶部的原生 Title 文字更显沉浸，Windows 则照常显示
         self.title(title if platform.system() == "Windows" else "")
         
-        # 1. 扩容：尺寸调整为宽扁的黄金比例(460x260)，彻底解决多行截断问题
-        self.geometry("460x260")
+        # 1. 扩容：尺寸调整为宽扁的黄金比例 (460x240)，彻底解决多行截断问题
+        self.geometry("460x240")
         self.transient(master) 
         self.grab_set() 
         self.resizable(False, False)
@@ -983,7 +983,7 @@ class ModernAlert(ctk.CTkToplevel):
         # 2. 居中计算 (根据新尺寸适配偏移量)
         try:
             x = master.winfo_rootx() + (master.winfo_width() // 2) - 230
-            y = master.winfo_rooty() + (master.winfo_height() // 2) - 130
+            y = master.winfo_rooty() + (master.winfo_height() // 2) - 120
             self.geometry(f"+{x}+{y}")
         except Exception: 
             pass
@@ -1014,7 +1014,7 @@ class ModernAlert(ctk.CTkToplevel):
         # 内部主标题
         ctk.CTkLabel(text_frame, text=title, font=("微软雅黑", 16, "bold"), text_color=color, anchor="w").pack(fill="x", pady=(0, 10))
         
-        # [关键修复] 正文文本：强制左对齐 (justify="left")，阅读数据时视觉更规整
+        # [关键修复] 正文文本：强制左对齐 (justify="left")，彻底解决文字视觉未对齐问题
         ctk.CTkLabel(text_frame, text=message, font=("微软雅黑", 13), text_color=("gray30", "gray80"), justify="left", anchor="w", wraplength=310).pack(fill="x")
 
         # 4. 底部：按钮区 (靠右对齐)
@@ -1024,38 +1024,6 @@ class ModernAlert(ctk.CTkToplevel):
         btn_hover = ("#E74C3C", "#A32B2B") if is_err else ("#36719f", "#36719f")
         ctk.CTkButton(btn_frame, text="OK", width=90, height=30, corner_radius=6, font=("微软雅黑", 12, "bold"), 
                       fg_color=color, hover_color=btn_hover, command=self.destroy).pack(side="right")
-        
-    """[PyArchitect] 现代扁平化模态弹窗"""
-    def __init__(self, master, title, message, type="info"):
-        super().__init__(master)
-        self.title(title)
-        self.geometry("380x200")
-        self.transient(master) 
-        self.grab_set() # 模态锁定
-        self.resizable(False, False)
-        
-        # 居中计算
-        try:
-            x = master.winfo_rootx() + (master.winfo_width() // 2) - 190
-            y = master.winfo_rooty() + (master.winfo_height() // 2) - 100
-            self.geometry(f"+{x}+{y}")
-        except: pass
-
-        # 颜色与图标
-        is_err = (type == "error")
-        color = ("#C0392B", "#FF4757") if is_err else ("#3B8ED0", "#3B8ED0")
-        icon = "❌" if is_err else "ℹ️"
-
-        # 内容布局
-        bg_frame = ctk.CTkFrame(self, fg_color="transparent")
-        bg_frame.pack(fill="both", expand=True, padx=20, pady=20)
-
-        ctk.CTkLabel(bg_frame, text=icon, font=("Arial", 32)).pack(pady=(0, 10))
-        ctk.CTkLabel(bg_frame, text=title, font=("微软雅黑", 14, "bold"), text_color=color).pack(pady=(0, 5))
-        ctk.CTkLabel(bg_frame, text=message, font=("微软雅黑", 12), text_color=("gray40", "gray80"), wraplength=340).pack()
-
-        ctk.CTkButton(bg_frame, text="OK", width=80, height=28, fg_color=color, command=self.destroy).pack(side="bottom")
-
 
 import customtkinter as ctk
 import threading
