@@ -169,7 +169,7 @@ ctk.set_default_color_theme("blue")
 COLOR_BG_MAIN     = ("#F3F3F3", "#121212")    # 主背景
 COLOR_PANEL_LEFT  = ("#FFFFFF", "#1a1a1a")    # 侧边栏
 COLOR_PANEL_RIGHT = ("#F9F9F9", "#0f0f0f")    # 内容区
-COLOR_CARD        = ("#FFFFFF", "#2d2d2d")    # 任务卡片
+COLOR_CARD        = ("#F2F2F2", "#2d2d2d")    # 任务卡片 (将浅色模式下的纯白改为浅灰，确保与侧边栏区分)
 COLOR_TEXT_MAIN   = ("#333333", "#FFFFFF")    # 主要文字
 COLOR_TEXT_SUB    = ("#555555", "#888888")    # 次要文字
 COLOR_TEXT_HINT   = ("#888888", "#AAAAAA")    # 提示/占位符
@@ -1569,10 +1569,10 @@ class UltraEncoderApp(DnDWindow):
         self.btn_clear.pack(side="left", padx=5)
         
         # 参数配置区 (底部容器)
-        l_btm_bg = ("#FFFFFF", "#222222") 
+        l_btm_bg = ("#F2F2F2", "#222222") 
         l_btm = ctk.CTkFrame(left, fg_color=l_btm_bg, corner_radius=20)
         l_btm.pack(side="bottom", fill="x", padx=UNIFIED_PAD_X, pady=10)
-        
+
         # 绑定变量
         default_gpu = getattr(self, 'has_nvidia_gpu', False)
         self.gpu_var = ctk.BooleanVar(value=default_gpu)
@@ -1818,8 +1818,9 @@ class UltraEncoderApp(DnDWindow):
         if not hasattr(self, "_resize_bind_id"):
             self._resize_bind_id = self.monitor_frame.bind("<Configure>", self._trigger_adaptive_layout)
         
-        self.monitor_frame.grid_columnconfigure(0, weight=1)
-        self.monitor_frame.grid_columnconfigure(1, weight=1)
+        # [PyArchitect Fix] 使用 uniform="equal_cols" 强制锁定两列宽度绝对均分，无视内部内容挤压
+        self.monitor_frame.grid_columnconfigure(0, weight=1, uniform="equal_cols")
+        self.monitor_frame.grid_columnconfigure(1, weight=1, uniform="equal_cols")
         self._trigger_adaptive_layout()
 
     def _trigger_adaptive_layout(self, event=None):
@@ -1849,15 +1850,17 @@ class UltraEncoderApp(DnDWindow):
                 if use_grid_mode:
                     row = i // 2
                     col = i % 2
-                    ch.grid(row=row, column=col, sticky="ew", padx=5, pady=5)
+                    # [PyArchitect Fix] 使用 nsew 填满整个单元格
+                    ch.grid(row=row, column=col, sticky="nsew", padx=5, pady=5)
                 continue
 
             if use_grid_mode:
                 row = i // 2
                 col = i % 2
-                ch.grid(row=row, column=col, sticky="ew", padx=5, pady=5)
+                # [PyArchitect Fix] 使用 nsew 填满整个单元格
+                ch.grid(row=row, column=col, sticky="nsew", padx=5, pady=5)
             else:
-                ch.grid(row=i, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+                ch.grid(row=i, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
 
     def process_caching(self, src_path, widget, lock_obj=None, no_wait=False):
         """
