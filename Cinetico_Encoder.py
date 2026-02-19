@@ -1128,6 +1128,14 @@ class SplashScreen(ctk.CTkToplevel):
         self.console.see("end") 
         self.console.configure(state="disabled")
         self.update()
+    
+    def _finish_boot(self) -> None:
+        """
+        安全回调：将 UI 状态切换与销毁操作交由主线程执行，避免 TclError 内存冲突。
+        """
+        if self.winfo_exists():
+            self.root.deiconify()
+            self.destroy()
 
     def run_boot_sequence(self):
         try:
@@ -1190,14 +1198,13 @@ class SplashScreen(ctk.CTkToplevel):
             
             self.bar.set(1.0)
             
-            # 切换
-            self.root.deiconify()
-            self.destroy()
+            # [修改点] 切换：通过 after(0, ...) 将操作排队到主线程执行
+            self.after(0, self._finish_boot)
             
         except Exception as e:
             print(f"Boot Error: {e}")
-            self.root.deiconify()
-            self.destroy()
+            # [修改点] 异常时同样需要安全退出
+            self.after(0, self._finish_boot)
 
 # =========================================================================
 # [Module 4] Main Application
