@@ -557,28 +557,27 @@ class MonitorChannel(ctk.CTkFrame):
         btm = ctk.CTkFrame(self, fg_color="transparent")
         btm.pack(fill="x", padx=15, pady=(5, 12))
         
-        # [PyArchitect Refactor] 使用 Grid 布局替代 Pack，实现严格的底部基线对齐
+        # [PyArchitect] Grid 布局调整：严格的底部基线对齐
         btm.grid_columnconfigure(0, weight=0) # FPS 数字
         btm.grid_columnconfigure(1, weight=0) # FPS 单位
-        btm.grid_columnconfigure(2, weight=1) # 弹簧占位，将剩余元素推向右侧
-        btm.grid_columnconfigure(3, weight=0) # 进度百分比
-        btm.grid_columnconfigure(4, weight=0) # ETA / Ratio 复合信息
+        btm.grid_columnconfigure(2, weight=1) # 弹簧占位，推开两侧
+        btm.grid_columnconfigure(3, weight=0) # ETA
+        btm.grid_columnconfigure(4, weight=0) # 进度百分比
         
-        # FPS 值：使用固定宽度防抖，'e' (East) 右对齐紧贴单位
-        self.lbl_fps = ctk.CTkLabel(btm, text="--", font=("Impact", 20), text_color=COLOR_TEXT_HINT, width=42, anchor="e")
-        # sticky="s" (South) 确保元素向下沉底对齐
-        self.lbl_fps.grid(row=0, column=0, sticky="s", pady=(0, 0)) 
+        # FPS 值：锚点设为 se (右下)，紧贴单位
+        self.lbl_fps = ctk.CTkLabel(btm, text="--", font=("Impact", 20), text_color=COLOR_TEXT_HINT, width=42, anchor="se")
+        self.lbl_fps.grid(row=0, column=0, sticky="s", pady=0) 
         
-        # FPS 单位
-        ctk.CTkLabel(btm, text="FPS", font=("Arial", 10, "bold"), text_color=COLOR_TEXT_HINT).grid(row=0, column=1, sticky="s", padx=(4, 0), pady=(0, 3))
+        # FPS 单位：微调 pady=(0, 4) 抬升小字，对齐大字的基线
+        ctk.CTkLabel(btm, text="FPS", font=("Arial", 10, "bold"), text_color=COLOR_TEXT_HINT, anchor="sw").grid(row=0, column=1, sticky="s", padx=(4, 0), pady=(0, 4))
         
-        # 进度指示 (独立焦点)
-        self.lbl_prog = ctk.CTkLabel(btm, text="0%", font=("Arial", 16, "bold"), text_color=COLOR_TEXT_MAIN)
-        self.lbl_prog.grid(row=0, column=3, sticky="s", padx=(0, 15), pady=(0, 1))
-        
-        # 次要信息复合体 (合并 ETA 与 Ratio，降低视觉噪音)
-        self.lbl_info_sub = ctk.CTkLabel(btm, text="--:--  |  --%", font=("Consolas", 11), text_color=COLOR_TEXT_SUB)
-        self.lbl_info_sub.grid(row=0, column=4, sticky="s", pady=(0, 3))
+        # ETA 时间预估
+        self.lbl_eta = ctk.CTkLabel(btm, text="ETA: --:--", font=("Consolas", 12), text_color=COLOR_TEXT_SUB, anchor="se")
+        self.lbl_eta.grid(row=0, column=3, sticky="s", padx=(0, 15), pady=(0, 3))
+
+        # 进度指示：锚点 se (右下)
+        self.lbl_prog = ctk.CTkLabel(btm, text="0%", font=("Arial", 16, "bold"), text_color=COLOR_TEXT_MAIN, anchor="se")
+        self.lbl_prog.grid(row=0, column=4, sticky="s", pady=(0, 1))
 
         self.is_active = False
         self.last_update_time = time.time()
@@ -613,7 +612,7 @@ class MonitorChannel(ctk.CTkFrame):
         self.lbl_eta.configure(text_color=COLOR_SUCCESS)
         self.last_update_time = time.time()
 
-    def update_data(self, fps: float, prog: float, eta: str, ratio: float, task_uuid: str) -> None:
+    def update_data(self, fps: float, prog: float, eta: str, task_uuid: str) -> None:
         """更新通道实时数据"""
         if not self.winfo_exists() or getattr(self, 'current_task_uuid', None) != task_uuid: 
             return 
@@ -623,8 +622,8 @@ class MonitorChannel(ctk.CTkFrame):
         self.lbl_fps.configure(text=f"{float(fps):.1f}", text_color=COLOR_TEXT_MAIN) 
         self.lbl_prog.configure(text=f"{int(prog*100)}%")
         
-        # [PyArchitect] 复合信息流更新
-        self.lbl_info_sub.configure(text=f"{eta}  |  {ratio:.1f}%")
+        # 智能判断：如果传入的 eta 已经是特殊状态词(如 Finalizing)，则直接显示
+        self.lbl_eta.configure(text=eta if "ETA" in eta or "Final" in eta else f"ETA: {eta}")
 
     def reset(self) -> None:
         """重置通道为等待状态"""
@@ -636,8 +635,7 @@ class MonitorChannel(ctk.CTkFrame):
         
         self.lbl_fps.configure(text="--", text_color=COLOR_TEXT_HINT)
         self.lbl_prog.configure(text="0%", text_color=COLOR_TEXT_HINT)
-        # [PyArchitect] 重置复合信息文本
-        self.lbl_info_sub.configure(text="--:--  |  --%", text_color=COLOR_TEXT_HINT)
+        self.lbl_eta.configure(text="ETA: --:--", text_color=COLOR_TEXT_HINT)
         self.scope.clear()
 
     def set_placeholder(self) -> None:
@@ -651,8 +649,7 @@ class MonitorChannel(ctk.CTkFrame):
         
         self.lbl_fps.configure(text="--", text_color=COLOR_TEXT_HINT)
         self.lbl_prog.configure(text="--", text_color=COLOR_TEXT_HINT)
-        # [PyArchitect] 清空复合信息文本
-        self.lbl_info_sub.configure(text="", text_color=COLOR_TEXT_HINT)
+        self.lbl_eta.configure(text="", text_color=COLOR_TEXT_HINT)
 
 class ToastNotification(ctk.CTkFrame):
     """自定义 Toast 消息提示框，自下而上浮出"""
@@ -2499,20 +2496,16 @@ class UltraEncoderApp(DnDWindow):
                                         if eta_sec < 0: eta_sec = 0
                                         eta = f"{int(eta_sec//60):02d}:{int(eta_sec%60):02d}"
                                     
-                                    ratio = 0.0
-                                    if working_output_file and os.path.exists(working_output_file) and final_prog > 0.01:
-                                        curr_size = os.path.getsize(working_output_file)
-                                        in_proc = input_size * final_prog
-                                        if in_proc > 0: ratio = (curr_size / in_proc) * 100
-                                    
                                     # [关键] 更新时必须传入 task_token，并检查本地锁
                                     if not is_finished_locally:
                                         if final_prog >= 0.98:
-                                            self.safe_update(ch_ui.update_data, fps, 0.99, "Finalizing...", ratio, task_token)
+                                            # 删除 ratio 参数
+                                            self.safe_update(ch_ui.update_data, fps, 0.99, "Finalizing...", task_token)
                                             self.safe_update(card.set_status, "📦 封装中...", COLOR_ACCENT, STATE_ENCODING)
                                             self.safe_update(card.set_progress, 0.99, COLOR_ACCENT)
                                         else:
-                                            self.safe_update(ch_ui.update_data, fps, final_prog, eta, ratio, task_token)
+                                            # 删除 ratio 参数
+                                            self.safe_update(ch_ui.update_data, fps, final_prog, eta, task_token)
                                             self.safe_update(card.set_progress, final_prog, COLOR_ACCENT)
                                     
                                     last_ui_update_time = now
