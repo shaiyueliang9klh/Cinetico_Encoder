@@ -1340,10 +1340,12 @@ class UltraEncoderApp(DnDWindow):
         """检查是否需要显示空状态占位图"""
         if not self.file_queue:
             self.scroll.pack_forget()
-            self.lbl_placeholder.pack(fill="both", expand=True, padx=10, pady=5)
+            # 将 padx 修改为 20，与下方参数配置区的 UNIFIED_PAD_X 严格对齐
+            self.lbl_placeholder.pack(fill="both", expand=True, padx=15, pady=0)
         else:
             self.lbl_placeholder.pack_forget()
-            self.scroll.pack(fill="both", expand=True, padx=10, pady=5)
+            # 将 padx 修改为 20，使滚动条的外边缘与下方区域的边缘处于同一垂线上
+            self.scroll.pack(fill="both", expand=True, padx=15, pady=0)
 
     def add_list(self, files):
         """将文件添加到任务队列，并执行智能排序"""
