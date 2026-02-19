@@ -37,138 +37,117 @@ from http import HTTPStatus
 FFMPEG_PATH = "ffmpeg"
 FFPROBE_PATH = "ffprobe"
 
-def check_and_install_dependencies():
+from typing import Callable, Optional
+
+def check_and_install_dependencies(status_cb: Optional[Callable[[str], None]] = None, 
+                                   progress_cb: Optional[Callable[[float], None]] = None) -> None:
     """
-    环境自检函数。
-    1. 检查并 pip 自动安装缺失的 Python 第三方库。
-    2. 检查 FFmpeg 是否存在，若不存在则根据操作系统（Win/Mac）自动下载并解压。
+    环境自检函数 (支持异步状态回调)。
+    1. 检查并自动安装缺失的 Python 库。
+    2. 检查 FFmpeg，若不存在则自动下载解压，并通过回调实时更新 UI。
     """
     global FFMPEG_PATH, FFPROBE_PATH
     
-    # [关键修改] 检测是否处于打包环境 (Frozen)
+    def _report_status(msg: str) -> None:
+        """内部状态报告器：同时输出到控制台与 UI 回调"""
+        print(msg)
+        if status_cb:
+            status_cb(msg)
+
+    # 1. 冻结环境检测 (打包模式)
     if getattr(sys, 'frozen', False):
-        print("运行于打包模式，跳过依赖安装...")
-        
-        # PyInstaller 解压临时目录
+        _report_status("Frozen env detected, skipping pip...")
         bundle_dir = sys._MEIPASS 
-        
-        # 直接指定内置的 ffmpeg 路径
         target_ffmpeg = os.path.join(bundle_dir, "bin", "ffmpeg")
-        
         if os.path.exists(target_ffmpeg):
             FFMPEG_PATH = target_ffmpeg
-            # 给它加上执行权限，防止 macOS 报 Permission denied
-            try:
-                os.chmod(target_ffmpeg, 0o755)
+            try: os.chmod(target_ffmpeg, 0o755)
             except: pass
-            print(f"✅ 找到内置 FFmpeg: {FFMPEG_PATH}")
-        else:
-            print("❌ 致命错误：打包包中丢失 ffmpeg！")
-            
-        return  # 彻底结束函数，绝对不运行后面的 pip install 代码
+        return
 
-    # 必需的第三方库列表 (Import Name, Pip Package Name)
+    # 2. Python 依赖库检查
     required_packages = [
-        ("customtkinter", "customtkinter"),
-        ("tkinterdnd2", "tkinterdnd2"),
-        ("PIL", "pillow"),
-        ("packaging", "packaging"),
-        ("uuid", "uuid"),
-        ("darkdetect", "darkdetect") 
+        ("customtkinter", "customtkinter"), ("tkinterdnd2", "tkinterdnd2"),
+        ("PIL", "pillow"), ("packaging", "packaging"),
+        ("uuid", "uuid"), ("darkdetect", "darkdetect") 
     ]
     
-    print("-" * 50)
-    print("正在初始化运行环境...")
-
-    # --- 1. Python 依赖库检查 ---
+    _report_status("Checking Python Dependencies...")
     for import_name, package_name in required_packages:
         if importlib.util.find_spec(import_name) is None:
-            print(f"⚠️  缺失组件: {package_name}，正在尝试自动安装...")
+            _report_status(f"Installing {package_name}...")
             try:
-                # 使用当前 Python 解释器调用 pip 安装，使用清华源加速
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", package_name, 
                     "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"
                 ])
-                print(f"✅  {package_name} 安装成功")
             except subprocess.CalledProcessError:
-                print(f"❌  {package_name} 安装失败，请手动运行 pip install {package_name}")
+                _report_status(f"ERR: Failed to install {package_name}")
 
-    # --- 2. FFmpeg 二进制文件检查 ---
-    print("正在检查核心组件 FFmpeg...")
-    
+    # 3. FFmpeg 二进制检查与下载
+    _report_status("Checking Core Engine...")
     base_dir = os.path.dirname(os.path.abspath(__file__))
     bin_dir = os.path.join(base_dir, "bin")
     os.makedirs(bin_dir, exist_ok=True)
 
-    system_name = platform.system() # 获取系统类型: "Windows" 或 "Darwin"
-    
-    # 根据平台设定下载源和目标路径
+    system_name = platform.system()
     if system_name == "Windows":
-        target_ffmpeg = os.path.join(bin_dir, "ffmpeg.exe")
-        target_ffprobe = os.path.join(bin_dir, "ffprobe.exe")
+        target_ffmpeg, target_ffprobe = os.path.join(bin_dir, "ffmpeg.exe"), os.path.join(bin_dir, "ffprobe.exe")
         url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
     elif system_name == "Darwin":
-        target_ffmpeg = os.path.join(bin_dir, "ffmpeg")
-        target_ffprobe = os.path.join(bin_dir, "ffprobe")
+        target_ffmpeg, target_ffprobe = os.path.join(bin_dir, "ffmpeg"), os.path.join(bin_dir, "ffprobe")
         url = "https://evermeet.cx/ffmpeg/ffmpeg-6.0.zip" 
     else:
-        print("❌ 不支持的操作系统，请手动安装 FFmpeg")
         return
 
-    # 检测逻辑：优先检查 bin 目录，其次检查系统环境变量
+    # 路径判定
     if os.path.exists(target_ffmpeg):
-        print(f"✔  FFmpeg 本地组件已就绪: {target_ffmpeg}")
-        FFMPEG_PATH = target_ffmpeg
-        FFPROBE_PATH = target_ffprobe
+        FFMPEG_PATH, FFPROBE_PATH = target_ffmpeg, target_ffprobe
+        return
     elif shutil.which("ffmpeg"):
-        print("✔  检测到系统环境变量中的 FFmpeg")
-        FFMPEG_PATH = "ffmpeg"
-        FFPROBE_PATH = "ffprobe"
-    else:
-        # 下载与解压逻辑
-        print(f"⚠️  未检测到 FFmpeg，正在为 {system_name} 自动下载组件...")
-        try:
-            zip_path = os.path.join(bin_dir, "ffmpeg_temp.zip")
-            
-            # 下载进度回调
-            def progress_hook(count, block_size, total_size):
-                percent = int(count * block_size * 100 / total_size)
-                print(f"\r下载进度: {percent}%", end='')
-            
-            urllib.request.urlretrieve(url, zip_path, reporthook=progress_hook)
-            print("\n✅  下载完成，正在解压核心文件...")
+        FFMPEG_PATH, FFPROBE_PATH = "ffmpeg", "ffprobe"
+        return
 
-            # 智能解压：只提取 ffmpeg 和 ffprobe，忽略文档等杂项
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                for file in zip_ref.namelist():
-                    filename = os.path.basename(file)
-                    if "ffmpeg" in filename and not filename.endswith(".html"):
-                            source = zip_ref.open(file)
-                            target_file = target_ffmpeg if "ffmpeg" in filename else target_ffprobe
-                            
-                            # 写入二进制文件
-                            if "ffmpeg" in filename.lower() or "ffprobe" in filename.lower():
-                                with open(target_file, "wb") as f_out: 
-                                    shutil.copyfileobj(source, f_out)
+    # 下载逻辑
+    _report_status("Downloading FFmpeg...")
+    try:
+        zip_path = os.path.join(bin_dir, "ffmpeg_temp.zip")
+        
+        # 核心：将 urllib 的进度钩子转化为 UI 的进度条与状态文字
+        def progress_hook(count: int, block_size: int, total_size: int) -> None:
+            if total_size > 0:
+                percent = (count * block_size) / total_size
+                final_pct = min(1.0, percent)
+                # 更新 UI 状态文字与底部的物理进度条
+                if status_cb: status_cb(f"DOWNLOADING FFMPEG... {int(final_pct * 100)}%")
+                if progress_cb: progress_cb(final_pct)
+        
+        urllib.request.urlretrieve(url, zip_path, reporthook=progress_hook)
+        
+        _report_status("Extracting Engine...")
+        if progress_cb: progress_cb(0.0) # 进度条重置，准备解压动画 (可选)
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            for file in zip_ref.namelist():
+                filename = os.path.basename(file)
+                if "ffmpeg" in filename and not filename.endswith(".html"):
+                        source = zip_ref.open(file)
+                        t_file = target_ffmpeg if "ffmpeg" in filename else target_ffprobe
+                        if "ffmpeg" in filename.lower() or "ffprobe" in filename.lower():
+                            with open(t_file, "wb") as f_out: shutil.copyfileobj(source, f_out)
 
-            # 清理临时压缩包
-            try: os.remove(zip_path)
-            except OSError: pass
-            
-            # macOS 特权处理：赋予可执行权限
-            if system_name == "Darwin":
-                os.chmod(target_ffmpeg, 0o755)
-                if os.path.exists(target_ffprobe): os.chmod(target_ffprobe, 0o755)
+        try: os.remove(zip_path)
+        except: pass
+        
+        if system_name == "Darwin":
+            os.chmod(target_ffmpeg, 0o755)
+            if os.path.exists(target_ffprobe): os.chmod(target_ffprobe, 0o755)
 
-            print("🎉  FFmpeg 部署完成！")
-            FFMPEG_PATH = target_ffmpeg
-            FFPROBE_PATH = target_ffprobe
-            
-        except Exception as e:
-            print(f"\n❌  自动下载失败: {e}")
-            print("请手动下载 FFmpeg 并将其放置于 bin 目录。")
-
+        FFMPEG_PATH, FFPROBE_PATH = target_ffmpeg, target_ffprobe
+        _report_status("Engine Deployed.")
+        
+    except Exception as e:
+        _report_status(f"ERR: FFmpeg DL Failed - {e}")
 
 
 # =========================================================================
@@ -1029,86 +1008,50 @@ import sys
 
 class SplashScreen(ctk.CTkToplevel):
     """
-    [PyArchitect Design v9.0] "Data Stream" 最终版启动页
-    - 布局：左静右动。左侧 40% 极简标题，右侧 60% 瀑布流代码。
-    - 视觉：大幅增强代码流的可视度和滚动速度。
-    - 细节：保留黄金分割构图。
+    [PyArchitect Minimalist v10] 纯粹的启动页
+    - 摒弃所有装饰性假加载，完全基于真实的回调进度。
+    - 界面极度纯净，仅保留核心视觉锚点与右下角状态监视器。
     """
     def __init__(self, root_app):
         super().__init__(root_app)
         self.root = root_app
         self.root.withdraw()
 
-        # 1. 窗口属性 (960x540)
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         
         w, h = 960, 540
         ws, hs = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f'{w}x{h}+{int((ws-w)/2)}+{int((hs-h)/2)}')
+        self.configure(fg_color="#0B0B0B")
         
-        self.bg_color = "#0B0B0B"
-        self.configure(fg_color=self.bg_color)
-        
-        # 解析颜色
         raw_accent = COLOR_ACCENT
         self.accent_color = raw_accent[1] if isinstance(raw_accent, tuple) else raw_accent
 
-        # --- 分栏布局 ---
-        
-        # [右侧] 代码流区域 (占据右边 60%)
-        # 使用 Frame 包裹以控制边距
-        self.console_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.console_frame.place(relx=0.4, rely=0.05, relwidth=0.58, relheight=0.9)
-        
-        self.console = ctk.CTkTextbox(
-            self.console_frame, 
-            fg_color="transparent", 
-            text_color="#555555", # [修改] 显著提亮颜色，确保可见
-            font=("Consolas", 10),
-            state="disabled",
-            activate_scrollbars=False,
-            wrap="none" # 不换行，更有代码感
-        )
-        self.console.pack(fill="both", expand=True)
-
-        # [左侧] 视觉锚点 (占据左边 40%)
+        # --- 极简布局 (只保留左侧标题与右下角状态) ---
         
         # 1. 品牌色竖线
-        self.anchor_line = ctk.CTkFrame(self, width=6, height=160, fg_color=self.accent_color, corner_radius=0)
+        self.anchor_line = ctk.CTkFrame(self, width=6, height=115, fg_color=self.accent_color, corner_radius=0)
         self.anchor_line.place(relx=0.08, rely=0.45, anchor="w") 
         
-        # 2. 标题容器
-        self.text_box = ctk.CTkFrame(
-            self, 
-            fg_color="transparent", 
-            corner_radius=0,
-            width=400,
-            height=200
-        )
-        self.text_box.place(relx=0.09, rely=0.45, anchor="w")
+        # 2. 标题容器 (自适应大小)
+        self.text_box = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+        self.text_box.place(relx=0.1, rely=0.45, anchor="w")
 
-        # 主标题
         title_font = ("Segoe UI Black", 64) if platform.system() == "Windows" else ("Arial Black", 64)
-        ctk.CTkLabel(self.text_box, text="CINÉTICO", font=title_font, text_color="#FFFFFF").place(x=20, y=30)
+        ctk.CTkLabel(self.text_box, text="CINÉTICO", font=title_font, text_color="#FFFFFF").pack(anchor="w")
         
-        # 副标题
         sub_font = ("Segoe UI", 14, "bold")
-        ctk.CTkLabel(self.text_box, text="E  N  C  O  D  E  R     P  R  O", font=sub_font, text_color=self.accent_color).place(x=24, y=120)
+        ctk.CTkLabel(self.text_box, text="E  N  C  O  D  E  R     P  R  O", font=sub_font, text_color=self.accent_color).pack(anchor="w", padx=(5, 0))
 
-        # [右下角] 状态信息
+        # [右下角] 真实状态监视器
         self.status_lbl = ctk.CTkLabel(self, text="INITIALIZING...", font=("Consolas", 11), text_color="#888888")
         self.status_lbl.place(relx=0.95, rely=0.92, anchor="se")
 
-        # [底部] 极细进度条
+        # [底部] 真实进度条
         self.bar = ctk.CTkProgressBar(
-            self, 
-            width=w, 
-            height=3, 
-            progress_color=self.accent_color, 
-            fg_color="#1A1A1A", 
-            border_width=0, 
-            corner_radius=0
+            self, width=w, height=3, progress_color=self.accent_color, 
+            fg_color="#1A1A1A", border_width=0, corner_radius=0
         )
         self.bar.place(relx=0, rely=0.99, anchor="sw", relwidth=1)
         self.bar.set(0)
@@ -1116,94 +1059,39 @@ class SplashScreen(ctk.CTkToplevel):
         self.update()
         threading.Thread(target=self.run_boot_sequence, daemon=True).start()
 
-    def update_status(self, text):
-        self.status_lbl.configure(text=text.upper())
-        self.update()
+    def update_status(self, text: str) -> None:
+        """线程安全的 UI 文字更新"""
+        self.after(0, lambda: self.status_lbl.configure(text=text.upper()))
 
-    def log(self, text):
-        """高速日志写入"""
-        self.console.configure(state="normal")
-        # 移除时间戳的毫秒部分，让它看起来更像原始数据流
-        self.console.insert("end", f"> {text}\n")
-        self.console.see("end") 
-        self.console.configure(state="disabled")
-        self.update()
-    
+    def update_progress(self, val: float) -> None:
+        """线程安全的 UI 进度条更新"""
+        self.after(0, lambda: self.bar.set(val))
+
     def _finish_boot(self) -> None:
-        """
-        安全回调：将 UI 状态切换与销毁操作交由主线程执行，避免 TclError 内存冲突。
-        """
+        """安全切换回调"""
         if self.winfo_exists():
             self.root.deiconify()
             self.destroy()
 
-    def run_boot_sequence(self):
+    def run_boot_sequence(self) -> None:
+        """100% 真实的启动序列"""
         try:
-            # [修改] 极客风格的大量虚假日志，制造刷屏感
-            boot_logs = [
-                "KERNEL: Initializing memory manager...",
-                "ACPI: Core revision 2024.11",
-                "PCI: Probing hardware bus...",
-                "VIDEO: NVIDIA CUDA Driver detected (v12.4)",
-                "AUDIO: Initializing WASAPI subsystem...",
-                "NET: Binding local loopback interface...",
-                "FS: Mounting virtual file system (VFS)...",
-                "SECURITY: Verifying digital signatures...",
-                "MODULE: Loading 'customtkinter' (UI)...",
-                "MODULE: Loading 'pillow' (IMG)...",
-                "MODULE: Loading 'numpy' (MATH)...",
-                "THREAD: Spawning worker pool (16 threads)...",
-                "IO: Checking disk write permissions...",
-                "MEM: Allocating heap text segment...",
-                "GPU: Checking NVENC capabilities...",
-                "UI: Pre-caching font glyphs...",
-                "UI: Calculating DPI scaling factors...",
-                "SYS: Power management policy set to 'High Performance'"
-            ]
-
-            # 阶段 1: 疯狂刷屏
-            self.update_status("System Boot...")
-            for i, line in enumerate(boot_logs):
-                self.log(line)
-                # 前半段极快，后半段稍微慢一点点，制造节奏感
-                delay = 0.005 if i < 10 else 0.02 
-                time.sleep(delay)
-
-            self.bar.set(0.3)
+            # 传递 UI 更新函数给底层环境检测，实现真正的实时联动
+            self.update_status("VERIFYING DEPENDENCIES...")
+            check_and_install_dependencies(status_cb=self.update_status, progress_cb=self.update_progress)
             
-            # 阶段 2: 真实业务 (穿插日志)
-            self.update_status("Checking Deps...")
-            self.log("EXEC: check_dependencies()")
-            check_and_install_dependencies()
-            self.log("STATUS: OK.")
-            self.bar.set(0.5)
-            
-            self.update_status("Verifying Engine...")
-            self.log("EXEC: verify_ffmpeg_binary()")
-            # 模拟一点点停顿
-            time.sleep(0.1)
-            self.log(f"FOUND: {FFMPEG_PATH}")
-            self.bar.set(0.7)
-            
-            self.update_status("Scanning Disks...")
-            self.log("EXEC: DiskManager.probe_hardware()")
+            self.update_status("SCANNING STORAGE ARCHITECTURE...")
+            self.update_progress(0.8)
             DiskManager.get_windows_drives()
-            self.log("STATUS: Storage Map Updated.")
-            self.bar.set(0.9)
             
-            # 阶段 3: 启动
-            self.update_status("Ready.")
-            self.log("SYSTEM READY. HANDING OVER TO MAIN LOOP.")
-            time.sleep(0.3) # 稍微停顿让人看清最后一行
+            self.update_status("SYSTEM READY.")
+            self.update_progress(1.0)
             
-            self.bar.set(1.0)
-            
-            # [修改点] 切换：通过 after(0, ...) 将操作排队到主线程执行
+            # 如果一切本来就绪，这里只会闪过不到0.5秒；如果有下载，则会等待下载完毕
             self.after(0, self._finish_boot)
             
         except Exception as e:
             print(f"Boot Error: {e}")
-            # [修改点] 异常时同样需要安全退出
             self.after(0, self._finish_boot)
 
 # =========================================================================
