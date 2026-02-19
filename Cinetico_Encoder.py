@@ -555,26 +555,30 @@ class MonitorChannel(ctk.CTkFrame):
         
         # 底部：数据区
         btm = ctk.CTkFrame(self, fg_color="transparent")
-        btm.pack(fill="x", padx=15, pady=(0,10))
+        btm.pack(fill="x", padx=15, pady=(5, 12))
         
-        # [PyArchitect Fix] 使用固定容器包裹 FPS，防止数字变化导致 UI 抖动
-        fps_container = ctk.CTkFrame(btm, fg_color="transparent", width=70, height=30)
-        fps_container.pack_propagate(False) # 强制固定大小，不随内容收缩
-        fps_container.pack(side="left")
+        # [PyArchitect Refactor] 使用 Grid 布局替代 Pack，实现严格的底部基线对齐
+        btm.grid_columnconfigure(0, weight=0) # FPS 数字
+        btm.grid_columnconfigure(1, weight=0) # FPS 单位
+        btm.grid_columnconfigure(2, weight=1) # 弹簧占位，将剩余元素推向右侧
+        btm.grid_columnconfigure(3, weight=0) # 进度百分比
+        btm.grid_columnconfigure(4, weight=0) # ETA / Ratio 复合信息
         
-        self.lbl_fps = ctk.CTkLabel(fps_container, text="--", font=("Impact", 20), text_color=COLOR_TEXT_HINT)
-        self.lbl_fps.place(relx=0, rely=0.5, anchor="w") # 使用 absolute positioning inside frame
+        # FPS 值：使用固定宽度防抖，'e' (East) 右对齐紧贴单位
+        self.lbl_fps = ctk.CTkLabel(btm, text="--", font=("Impact", 20), text_color=COLOR_TEXT_HINT, width=42, anchor="e")
+        # sticky="s" (South) 确保元素向下沉底对齐
+        self.lbl_fps.grid(row=0, column=0, sticky="s", pady=(0, 0)) 
         
-        ctk.CTkLabel(btm, text="FPS", font=("Arial", 10, "bold"), text_color=COLOR_TEXT_HINT).pack(side="left", padx=(0,0), pady=(8,0))
+        # FPS 单位
+        ctk.CTkLabel(btm, text="FPS", font=("Arial", 10, "bold"), text_color=COLOR_TEXT_HINT).grid(row=0, column=1, sticky="s", padx=(4, 0), pady=(0, 3))
         
-        self.lbl_eta = ctk.CTkLabel(btm, text="--:--", font=("Consolas", 12), text_color=COLOR_TEXT_SUB)
-        self.lbl_eta.pack(side="right", padx=(10, 0))
+        # 进度指示 (独立焦点)
+        self.lbl_prog = ctk.CTkLabel(btm, text="0%", font=("Arial", 16, "bold"), text_color=COLOR_TEXT_MAIN)
+        self.lbl_prog.grid(row=0, column=3, sticky="s", padx=(0, 15), pady=(0, 1))
         
-        self.lbl_ratio = ctk.CTkLabel(btm, text="", font=("Consolas", 12), text_color=COLOR_TEXT_SUB)
-        self.lbl_ratio.pack(side="right", padx=(10, 0))
-        
-        self.lbl_prog = ctk.CTkLabel(btm, text="0%", font=("Arial", 14, "bold"), text_color=COLOR_TEXT_MAIN)
-        self.lbl_prog.pack(side="right")
+        # 次要信息复合体 (合并 ETA 与 Ratio，降低视觉噪音)
+        self.lbl_info_sub = ctk.CTkLabel(btm, text="--:--  |  --%", font=("Consolas", 11), text_color=COLOR_TEXT_SUB)
+        self.lbl_info_sub.grid(row=0, column=4, sticky="s", pady=(0, 3))
 
         self.is_active = False
         self.last_update_time = time.time()
@@ -609,8 +613,8 @@ class MonitorChannel(ctk.CTkFrame):
         self.lbl_eta.configure(text_color=COLOR_SUCCESS)
         self.last_update_time = time.time()
 
-    def update_data(self, fps, prog, eta, ratio, task_uuid): # [修改] 新增 task_uuid 参数
-        # [关键] 令牌校验：如果传入的 uuid 与当前通道绑定的 uuid 不一致，说明这是“幽灵消息”，直接丢弃
+    def update_data(self, fps: float, prog: float, eta: str, ratio: float, task_uuid: str) -> None:
+        """更新通道实时数据"""
         if not self.winfo_exists() or getattr(self, 'current_task_uuid', None) != task_uuid: 
             return 
             
@@ -618,33 +622,37 @@ class MonitorChannel(ctk.CTkFrame):
         self.scope.add_point(fps)
         self.lbl_fps.configure(text=f"{float(fps):.1f}", text_color=COLOR_TEXT_MAIN) 
         self.lbl_prog.configure(text=f"{int(prog*100)}%")
-        self.lbl_eta.configure(text=f"ETA: {eta}")
-        self.lbl_ratio.configure(text=f"Ratio: {ratio:.1f}%")
+        
+        # [PyArchitect] 复合信息流更新
+        self.lbl_info_sub.configure(text=f"{eta}  |  {ratio:.1f}%")
 
-    def reset(self):
-        """重置通道"""
+    def reset(self) -> None:
+        """重置通道为等待状态"""
         if not self.winfo_exists(): return
-        self.current_task_uuid = None # [关键] 清除令牌
+        self.current_task_uuid = None
         self.is_active = False
         self.lbl_title.configure(text="通道 · 空闲", text_color=COLOR_TEXT_SUB)
         self.lbl_info.configure(text="等待任务...", text_color=COLOR_TEXT_HINT)
+        
         self.lbl_fps.configure(text="--", text_color=COLOR_TEXT_HINT)
         self.lbl_prog.configure(text="0%", text_color=COLOR_TEXT_HINT)
-        self.lbl_eta.configure(text="--:--", text_color=COLOR_TEXT_HINT)
-        self.lbl_ratio.configure(text="", text_color=COLOR_TEXT_HINT)
+        # [PyArchitect] 重置复合信息文本
+        self.lbl_info_sub.configure(text="--:--  |  --%", text_color=COLOR_TEXT_HINT)
         self.scope.clear()
 
-    def set_placeholder(self):
+    def set_placeholder(self) -> None:
+        """设置为未启用占位状态"""
         if not self.winfo_exists(): return
         self.is_active = False
         self.configure(border_color=COLOR_BORDER)
         self.lbl_title.configure(text="通道 · 未启用", text_color=COLOR_TEXT_HINT)
         self.lbl_info.configure(text="Channel Disabled", text_color=COLOR_TEXT_HINT)
         self.scope.clear()
+        
         self.lbl_fps.configure(text="--", text_color=COLOR_TEXT_HINT)
         self.lbl_prog.configure(text="--", text_color=COLOR_TEXT_HINT)
-        self.lbl_eta.configure(text="", text_color=COLOR_TEXT_HINT)
-        self.lbl_ratio.configure(text="")
+        # [PyArchitect] 清空复合信息文本
+        self.lbl_info_sub.configure(text="", text_color=COLOR_TEXT_HINT)
 
 class ToastNotification(ctk.CTkFrame):
     """自定义 Toast 消息提示框，自下而上浮出"""
