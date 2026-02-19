@@ -965,6 +965,66 @@ class HelpWindow(ctk.CTkToplevel):
 
 
 class ModernAlert(ctk.CTkToplevel):
+    """
+    [PyArchitect] 现代扁平化模态弹窗 (类原生高颜值排版)
+    """
+    def __init__(self, master: ctk.CTk, title: str, message: str, type: str = "info") -> None:
+        super().__init__(master)
+        
+        # Mac 下隐藏顶部的原生 Title 文字更显沉浸，Windows 则照常显示
+        self.title(title if platform.system() == "Windows" else "")
+        
+        # 1. 扩容：尺寸调整为宽扁的黄金比例(460x260)，彻底解决多行截断问题
+        self.geometry("460x260")
+        self.transient(master) 
+        self.grab_set() 
+        self.resizable(False, False)
+        
+        # 2. 居中计算 (根据新尺寸适配偏移量)
+        try:
+            x = master.winfo_rootx() + (master.winfo_width() // 2) - 230
+            y = master.winfo_rooty() + (master.winfo_height() // 2) - 130
+            self.geometry(f"+{x}+{y}")
+        except Exception: 
+            pass
+
+        is_err = (type == "error")
+        color = ("#C0392B", "#FF4757") if is_err else ("#3B8ED0", "#3B8ED0")
+        
+        # 智能上下文图标
+        if is_err: icon = "❌"
+        elif "报告" in title: icon = "📊"
+        else: icon = "ℹ️"
+
+        # 采用弱对比底色，模仿系统级弹窗的面板质感
+        bg_frame = ctk.CTkFrame(self, fg_color=("gray95", "gray12"), corner_radius=0)
+        bg_frame.pack(fill="both", expand=True)
+
+        # 3. 采用左右分栏的经典排版 (左侧图标，右侧文字)
+        content_frame = ctk.CTkFrame(bg_frame, fg_color="transparent")
+        content_frame.pack(fill="both", expand=True, padx=30, pady=(35, 10))
+
+        # 左侧：大号图标
+        ctk.CTkLabel(content_frame, text=icon, font=("Arial", 46)).pack(side="left", anchor="nw", padx=(0, 25))
+
+        # 右侧：文本区容器
+        text_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        text_frame.pack(side="left", fill="both", expand=True)
+
+        # 内部主标题
+        ctk.CTkLabel(text_frame, text=title, font=("微软雅黑", 16, "bold"), text_color=color, anchor="w").pack(fill="x", pady=(0, 10))
+        
+        # [关键修复] 正文文本：强制左对齐 (justify="left")，阅读数据时视觉更规整
+        ctk.CTkLabel(text_frame, text=message, font=("微软雅黑", 13), text_color=("gray30", "gray80"), justify="left", anchor="w", wraplength=310).pack(fill="x")
+
+        # 4. 底部：按钮区 (靠右对齐)
+        btn_frame = ctk.CTkFrame(bg_frame, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=30, pady=(0, 25))
+        
+        btn_hover = ("#E74C3C", "#A32B2B") if is_err else ("#36719f", "#36719f")
+        ctk.CTkButton(btn_frame, text="OK", width=90, height=30, corner_radius=6, font=("微软雅黑", 12, "bold"), 
+                      fg_color=color, hover_color=btn_hover, command=self.destroy).pack(side="right")
+        
     """[PyArchitect] 现代扁平化模态弹窗"""
     def __init__(self, master, title, message, type="info"):
         super().__init__(master)
@@ -2250,7 +2310,7 @@ class UltraEncoderApp(DnDWindow):
             msg += f"\n压缩比: {ratio:.2f}% (节省 {save_rate:.2f}% 空间)"
         else:
             msg += "\n数据异常：原视频大小为0"
-        messagebox.showinfo("基准测试报告", msg)
+        ModernAlert(self, "基准测试报告", msg, type="info")
 
     def _worker_io_task(self, task_file):
         """线程任务：IO 预读取"""
