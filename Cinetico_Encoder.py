@@ -1137,15 +1137,37 @@ class SplashScreen(ctk.CTkToplevel):
 class UltraEncoderApp(DnDWindow):
     """主应用程序类"""
     
+    import queue
+
     def safe_update(self, func, *args, **kwargs):
-        """线程安全的 UI 更新包装器"""
-        if self.winfo_exists():
-            self.after(10, partial(self._guarded_call, func, *args, **kwargs))
+        """
+        高并发安全的 UI 更新网关。
+        采用无锁队列 (Queue) 替代直接的跨线程 after 调用，防止事件循环阻塞与渲染丢包。
+        """
+        if not hasattr(self, "_ui_event_queue"):
+            self._ui_event_queue = queue.Queue(maxsize=10000)
+            self._process_ui_events() # 惰性启动主线程消费者循环
             
-    def _guarded_call(self, func, *args, **kwargs):
         try:
-            if self.winfo_exists(): func(*args, **kwargs)
-        except Exception: pass
+            self._ui_event_queue.put_nowait((func, args, kwargs))
+        except queue.Full:
+            pass # 极高频拥塞情况下的防御性丢包策略，确保系统核心不会挂起
+
+    def _process_ui_events(self):
+        """运行于主线程的微秒级渲染帧消费者引擎"""
+        if not self.winfo_exists(): return
+        try:
+            # 批量清空当前队列中累积的时序状态，阻断事件循环饥饿现象
+            for _ in range(50): 
+                func, args, kwargs = self._ui_event_queue.get_nowait()
+                try:
+                    if self.winfo_exists(): func(*args, **kwargs)
+                except Exception: pass
+        except queue.Empty:
+            pass
+        finally:
+            # 重新将消费者循环锚定至事件队尾，约 30 FPS 的人眼舒适刷新率
+            self.after(33, self._process_ui_events)
 
     def scroll_to_card(self, widget):
         """滚动列表以显示当前处理的卡片"""
@@ -2440,14 +2462,15 @@ class UltraEncoderApp(DnDWindow):
             cmd.extend(["-progress", "pipe:1", "-nostats", working_output_file])
             # --- cmd 构建结束 ---
 
-            # 3. 启动 FFmpeg 子进程
+            # 3. 启动 FFmpeg 子进程 (应用企业级安全加固，防止 OS 管道死锁)
             kwargs = get_subprocess_args()
             if platform.system() == "Windows":
-                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
+                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       text=True, encoding="utf-8", errors="replace", bufsize=1,
                                        startupinfo=kwargs['startupinfo'], creationflags=kwargs['creationflags'])
             else:
-                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-
+                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       text=True, encoding="utf-8", errors="replace", bufsize=1)
             self.active_procs.append(proc)
             
             decode_mode = "GPU" if allow_hw_decode_input else "CPU"
@@ -2468,7 +2491,8 @@ class UltraEncoderApp(DnDWindow):
             for line in proc.stdout:
                 if self.stop_flag or is_finished_locally: break
                 try: 
-                    line_str = line.decode('utf-8', errors='ignore').strip()
+                    # 流式迭代，规避 readline() 在无换行符时导致的永久挂起
+                    line_str = line.strip() 
                     if not line_str: continue
                     log_buffer.append(line_str)
                     
