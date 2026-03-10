@@ -27,6 +27,8 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from collections import deque
 from http import HTTPStatus
+import queue                       # [PyArchitect Fix] 提升为全局导入以解决作用域问题
+from typing import Callable, Any   # [PyArchitect Fix] 补充类型提示所需依赖
 
 # =========================================================================
 # [Module 1] Environment Initialization & Dependency Management
@@ -1136,16 +1138,20 @@ class SplashScreen(ctk.CTkToplevel):
 
 class UltraEncoderApp(DnDWindow):
     """主应用程序类"""
-    
-    import queue
 
-    def safe_update(self, func, *args, **kwargs):
+    def safe_update(self, func: Callable, *args: Any, **kwargs: Any) -> None:
         """
         高并发安全的 UI 更新网关。
         采用无锁队列 (Queue) 替代直接的跨线程 after 调用，防止事件循环阻塞与渲染丢包。
+        
+        Args:
+            func (Callable): 需要在 UI 主线程安全执行的函数句柄。
+            *args (Any): 透传给目标函数的位置参数。
+            **kwargs (Any): 透传给目标函数的关键字参数。
         """
         if not hasattr(self, "_ui_event_queue"):
-            self._ui_event_queue = queue.Queue(maxsize=10000)
+            # 初始化最大容量为 10000 的线程安全队列，并应用类型声明
+            self._ui_event_queue: queue.Queue = queue.Queue(maxsize=10000)
             self._process_ui_events() # 惰性启动主线程消费者循环
             
         try:
@@ -1153,20 +1159,28 @@ class UltraEncoderApp(DnDWindow):
         except queue.Full:
             pass # 极高频拥塞情况下的防御性丢包策略，确保系统核心不会挂起
 
-    def _process_ui_events(self):
-        """运行于主线程的微秒级渲染帧消费者引擎"""
-        if not self.winfo_exists(): return
+    def _process_ui_events(self) -> None:
+        """
+        运行于主线程的微秒级渲染帧消费者引擎。
+        分摊总线队列积压压力，并执行聚合态的批量 UI 渲染帧刷新。
+        """
+        if not self.winfo_exists(): 
+            return
+            
         try:
             # 批量清空当前队列中累积的时序状态，阻断事件循环饥饿现象
             for _ in range(50): 
                 func, args, kwargs = self._ui_event_queue.get_nowait()
                 try:
-                    if self.winfo_exists(): func(*args, **kwargs)
-                except Exception: pass
+                    if self.winfo_exists(): 
+                        func(*args, **kwargs)
+                except Exception: 
+                    # 精确吞噬单帧渲染异常，防止阻断后续画面的消费链条
+                    pass
         except queue.Empty:
             pass
         finally:
-            # 重新将消费者循环锚定至事件队尾，约 30 FPS 的人眼舒适刷新率
+            # 重新将消费者循环锚定至事件队尾，维持约 30 FPS 的人眼舒适刷新率
             self.after(33, self._process_ui_events)
 
     def scroll_to_card(self, widget):
