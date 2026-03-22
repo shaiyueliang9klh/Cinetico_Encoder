@@ -796,6 +796,38 @@ class TaskCard(ctk.CTkFrame):
         if self.winfo_exists():
             self.lbl_index.configure(text=f"{new_index:02d}")
 
+    def open_location(self) -> None:
+        """
+        跨平台打开文件所在目录，并尝试高亮选中目标文件。
+        采用非阻塞异步子进程 (Popen) 防止 GUI 线程假死。
+        防御性拦截文件丢失或系统调用失败的异常。
+        """
+        # 边界防御：如果文件路径为空或文件已被外部程序物理删除，则直接中断，避免抛出系统级错误
+        if not self.filepath or not os.path.exists(self.filepath):
+            print(f"[IO Warning] 目标文件已丢失，无法定位: {self.filepath}")
+            return
+            
+        try:
+            import platform
+            import subprocess
+            
+            sys_plat = platform.system()
+            target_path = os.path.normpath(self.filepath)
+            
+            if sys_plat == "Windows":
+                # Windows: 唤起 Explorer 并通过 /select 参数精准高亮该文件
+                subprocess.Popen(["explorer", "/select,", target_path])
+            elif sys_plat == "Darwin":
+                # macOS: 唤起 Finder 并通过 -R 参数揭示 (Reveal) 该文件
+                subprocess.Popen(["open", "-R", target_path])
+            else:
+                # Linux (Fallback): 使用 xdg-open 打开该文件所在的父级目录
+                subprocess.Popen(["xdg-open", os.path.dirname(target_path)])
+                
+        except Exception as e:
+            # 捕获操作系统拒绝访问、进程树挂载失败等底层异常，保留堆栈信息但不阻断主程序
+            print(f"[OS Subprocess Error] 唤起系统文件管理器失败: {e}")
+
     def show_log(self) -> None:
         """弹出当前任务的详细日志窗口"""
         log_win = ctk.CTkToplevel(self)
