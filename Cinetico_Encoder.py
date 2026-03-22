@@ -756,6 +756,29 @@ class TaskCard(ctk.CTkFrame):
         self.progress.set(0)
         self.progress.grid(row=2, column=0, columnspan=3, sticky="new", padx=12, pady=(0, 10))
         self.final_output_path = None
+    def set_status(self, text: str, text_color: tuple | str, code: int) -> None:
+        """
+        线程安全的卡片状态更新器。
+        """
+        if self.winfo_exists():
+            self.lbl_status.configure(text=text, text_color=text_color)
+            self.status_code = code
+
+    def set_progress(self, val: float, color: tuple | str) -> None:
+        """
+        线程安全的卡片进度条更新器。
+        """
+        if self.winfo_exists():
+            # 限制数值范围以防底层 Tkinter 渲染崩溃
+            safe_val = max(0.0, min(1.0, float(val)))
+            self.progress.set(safe_val)
+            self.progress.configure(progress_color=color)
+
+    def clean_memory(self) -> None:
+        """
+        清除当前卡片绑定的局部内存引用。
+        """
+        self.ram_data = None
 
     def show_log(self) -> None:
         """弹出当前任务的详细日志窗口"""
@@ -1861,6 +1884,10 @@ class UltraEncoderApp(DnDWindow):
         self.finished_tasks_count = 0
         self.temp_files.clear()
         self.active_procs.clear()
+        
+        # [PyArchitect Fix] 强制清空全局 RAM 缓存，切断幽灵引用，触发底层 GC 垃圾回收
+        GLOBAL_RAM_STORAGE.clear()
+        PATH_TO_TOKEN_MAP.clear()
         
         # 6. 重置 UI 视觉
         self.check_placeholder()
