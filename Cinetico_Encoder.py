@@ -1496,27 +1496,35 @@ class UltraEncoderApp(DnDWindow):
         set_execution_state(False)
         os._exit(0)
         
-    def kill_all_procs(self):
-        """强制终止所有子进程 (Mac/Win 双重保险)"""
-        # [关键] 遍历副本，防止在移除元素时导致列表迭代错误
+    def kill_all_procs(self) -> None:
+        """
+        终止所有挂起的子进程。
+        [PyArchitect Fix] 摒弃裸 except，精准捕获操作系统层级的进程调度异常。
+        """
         for p in list(self.active_procs): 
             try:
                 p.terminate()
                 if platform.system() != "Windows":
-                    p.kill() # Mac/Linux 下补刀，确保杀死
-            except: pass
+                    p.kill() 
+            except OSError:
+                pass # 进程句柄已失效或无权限
+            except subprocess.SubprocessError:
+                pass 
             
         self.active_procs.clear()
         
-        # 兜底清理：杀掉残留的 ffmpeg 进程
         try: 
             if platform.system() == "Windows":
                 subprocess.run(["taskkill", "/F", "/IM", "ffmpeg.exe"], 
-                             creationflags=subprocess.CREATE_NO_WINDOW, stderr=subprocess.DEVNULL)
+                             creationflags=subprocess.CREATE_NO_WINDOW, 
+                             stderr=subprocess.DEVNULL,
+                             check=False)
             else:
-                # macOS/Linux 激进清理
-                subprocess.run(["pkill", "-9", "-f", "ffmpeg"], stderr=subprocess.DEVNULL)
-        except: pass
+                subprocess.run(["pkill", "-9", "-f", "ffmpeg"], 
+                               stderr=subprocess.DEVNULL,
+                               check=False)
+        except OSError:
+            pass
 
     def sys_check(self):
         """启动时系统环境检查"""
@@ -1826,10 +1834,19 @@ class UltraEncoderApp(DnDWindow):
         
         # 3. [关键] 暴力重置线程池和锁 (解决卡顿的根源)
         # 如果旧线程池还在跑，直接抛弃它，创建新的
-        try: self.executor.shutdown(wait=False)
-        except: pass
+        try: 
+            self.executor.shutdown(wait=False)
+        except Exception: 
+            pass
         self.executor = ThreadPoolExecutor(max_workers=16)
         
+        # 补充对 I/O 预读线程池的同步绞杀
+        try:
+            if hasattr(self, 'io_executor'):
+                self.io_executor.shutdown(wait=False)
+        except Exception:
+            pass
+            
         # 重置锁对象 (防止死锁)
         self.queue_lock = threading.Lock()
         self.slot_lock = threading.Lock()
@@ -1998,24 +2015,39 @@ class UltraEncoderApp(DnDWindow):
                 fname = os.path.basename(src_path)
                 cache_path = os.path.join(self.temp_dir, f"CACHE_{int(time.time())}_{fname}")
                 copied = 0
-                with open(src_path, 'rb') as fsrc:
-                    with open(cache_path, 'wb') as fdst:
-                        while True:
-                            if self.stop_flag: 
-                                fdst.close(); os.remove(cache_path); return False
-                            chunk = fsrc.read(32*1024*1024) 
-                            if not chunk: break
-                            fdst.write(chunk)
-                            copied += len(chunk)
-                            if file_size > 0:
-                                self.safe_update(widget.set_progress, copied/file_size, COLOR_SSD_CACHE)
+                aborted_by_user = False
+                
+                # [PyArchitect Fix] 严格遵守 Context Manager 生命周期，绝不在持有句柄时进行跨级删除
+                with open(src_path, 'rb') as fsrc, open(cache_path, 'wb') as fdst:
+                    while True:
+                        if self.stop_flag: 
+                            aborted_by_user = True
+                            break # 安全跳出循环，交由 with 块自动释放 OS 文件锁
+                            
+                        chunk = fsrc.read(32 * 1024 * 1024) 
+                        if not chunk: break
+                        fdst.write(chunk)
+                        copied += len(chunk)
+                        if file_size > 0:
+                            self.safe_update(widget.set_progress, copied / file_size, COLOR_SSD_CACHE)
+                            
+                # 句柄已安全释放，此时可以放心执行系统级 I/O 销毁
+                if aborted_by_user:
+                    try: 
+                        os.remove(cache_path)
+                    except OSError: 
+                        pass # 忽略无权限或文件不存在的系统异常
+                    return False
+
                 self.temp_files.add(cache_path)
                 widget.ssd_cache_path = cache_path
                 widget.source_mode = "SSD_CACHE"
                 self.safe_update(widget.set_status, "Ready (Storage Cached) / 就绪 (存储缓存)", COLOR_SSD_CACHE, STATUS_READY)
                 self.safe_update(widget.set_progress, 1, COLOR_SSD_CACHE)
                 return True
-            except:
+                
+            except OSError:
+                # [PyArchitect Fix] 捕获具体的 OSError 而非裸奔的 Exception
                 self.safe_update(widget.set_status, "Cache Allocation Failed / 缓存分配失败", COLOR_ERROR, STATUS_ERR)
                 return False
         finally:
@@ -2120,12 +2152,18 @@ class UltraEncoderApp(DnDWindow):
             self.auto_clear_completed()
             self.add_list(files)
 
-    def launch_fireworks(self):
+    def launch_fireworks(self) -> None:
         """
-        任务完成时的庆祝动画（烟花）。
-        在顶层透明窗口上绘制粒子动画。
+        执行任务完成的视觉反馈。
+        [PyArchitect Fix] 移除了强制全局置顶的侵入性行为，尊重操作系统的窗口 Z 轴层级。
         """
         if not self.winfo_exists(): return
+        
+        # [防卫性编程] 如果主窗口已被最小化，拒绝渲染动画，仅弹出状态通知
+        if self.state() == "iconic":
+            self.show_toast("Execution Concluded / 队列执行完毕", "🏆")
+            return
+
         try:
             top = ctk.CTkToplevel(self)
             top.title("")
@@ -2133,24 +2171,24 @@ class UltraEncoderApp(DnDWindow):
             x, y = self.winfo_x(), self.winfo_y()
             top.geometry(f"{w}x{h}+{x}+{y}")
             top.overrideredirect(True) 
-            top.transient(self)        
+            top.transient(self)        # 仅吸附于主窗口，跟随主窗口的层级
             
             sys_plat = platform.system()
             canvas_bg = "black" 
 
-            # 跨平台透明背景处理
             if sys_plat == "Windows":
                 try:
                     top.attributes("-transparentcolor", "black")
-                    top.attributes("-topmost", True)
+                    # [修复] 彻底移除 top.attributes("-topmost", True)
                     canvas_bg = "black"
-                except: pass
+                except ctk.tkinter.TclError:
+                    pass
             elif sys_plat == "Darwin":
                 try:
                     top.attributes("-transparent", True)  
                     top.config(bg='systemTransparent')
                     canvas_bg = 'systemTransparent'
-                except:
+                except ctk.tkinter.TclError:
                     top.attributes("-alpha", 0.8)
                     canvas_bg = "black"
             else:
@@ -2291,16 +2329,18 @@ class UltraEncoderApp(DnDWindow):
         # --- 循环结束后的收尾工作 ---
         self.running = False
         
+        # [PyArchitect Fix] 强制释放 I/O 线程池，阻断 Zombie Threads 内存泄漏链条
+        if hasattr(self, 'io_executor'):
+            self.io_executor.shutdown(wait=False)
+        
         if not self.stop_flag:
-            # [PyArchitect Fix] 正常完成逻辑：播放动画 + 切换绿色完成状态
+            # 正常完成逻辑：播放动画 + 切换绿色完成状态
             self.safe_update(self.launch_fireworks)
             if self.test_mode:
                 self.safe_update(self._show_test_report)
-            
-            # 这里不再调用 reset_ui_state，而是调用 set_completion_state
             self.safe_update(self.set_completion_state)
         else:
-            # [PyArchitect Fix] 用户强制停止逻辑：提示 + 重置回初始状态
+            # 用户强制停止逻辑：提示 + 重置回初始状态
             self.safe_update(self.show_toast, "任务已手动停止", "🛑")
             self.safe_update(self.reset_ui_state)
 
@@ -2444,31 +2484,42 @@ class UltraEncoderApp(DnDWindow):
             else:
                 cmd.extend(["-c:v", "libx264"])
 
-            # 码率控制与像素格式 (保留原逻辑)
+            # 码率控制与像素格式
             use_10bit = self.depth_10bit_var.get()
             if final_hw_encode and "H.264" in codec_sel and use_10bit: use_10bit = False 
 
+            # [PyArchitect Fix] 动态量化参数补偿 (Dynamic QP Compensation)
+            # 不同编码器的量化标尺不通用。AV1 需要更高的数值才能达到与 H.264 相同的压缩基准。
+            target_crf = self.crf_var.get()
+            if "AV1" in codec_sel:
+                target_crf += 12  # 算法硬补偿：将 UI 设定的 28 映射为底层的 40
+            elif "H.265" in codec_sel:
+                target_crf += 2   # HEVC 微调补偿
+
             if final_hw_encode:
                 if platform.system() == "Darwin":
-                    mac_quality = int(100 - (self.crf_var.get() * 2.2))
+                    # Mac VideoToolbox 质量映射
+                    mac_quality = int(100 - (target_crf * 2.2))
                     if mac_quality < 20: mac_quality = 20
                     cmd.extend(["-q:v", str(mac_quality)])
                     if use_10bit: cmd.extend(["-pix_fmt", "p010le"])
                     else: cmd.extend(["-pix_fmt", "yuv420p"])
                 else:
+                    # Windows NVENC 质量映射
                     if use_10bit:
                          if allow_hw_decode_input: cmd.extend(["-vf", "scale_cuda=format=p010le"])
                          else: cmd.extend(["-pix_fmt", "p010le"])
                     else:
                          if allow_hw_decode_input: cmd.extend(["-vf", "scale_cuda=format=yuv420p"])
                          else: cmd.extend(["-pix_fmt", "yuv420p"])
-                    cmd.extend(["-rc", "vbr", "-cq", str(self.crf_var.get()), "-b:v", "0"])
+                    cmd.extend(["-rc", "vbr", "-cq", str(target_crf), "-b:v", "0"])
                     if "AV1" not in codec_sel: cmd.extend(["-preset", "p4"])
             else:
+                # CPU 软解质量映射
                 if use_10bit: cmd.extend(["-pix_fmt", "yuv420p10le"])
                 else: cmd.extend(["-pix_fmt", "yuv420p"])
-                cmd.extend(["-crf", str(self.crf_var.get()), "-preset", "medium"])
-            
+                cmd.extend(["-crf", str(target_crf), "-preset", "medium"])
+
             if has_audio: cmd.extend(["-c:a", "aac", "-b:a", "320k"])
             if self.keep_meta_var.get(): cmd.extend(["-map_metadata", "0"])
             cmd.extend(["-progress", "pipe:1", "-nostats", working_output_file])
