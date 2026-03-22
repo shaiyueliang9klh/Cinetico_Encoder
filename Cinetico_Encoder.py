@@ -1216,18 +1216,21 @@ class UltraEncoderApp(DnDWindow):
             self.show_help()
 
     # [新增] 切换测试模式
-    def toggle_test_mode(self):
+    def toggle_test_mode(self) -> None:
+        """
+        切换基准测试模式开关。
+        更新 UI 视觉反馈以匹配专业的工程标准。
+        """
         self.test_mode = not self.test_mode
         if self.test_mode:
-            self.show_toast("已激活：基准测试模式 (不保存文件)", "🧪")
-            self.lbl_main_title.configure(text_color="#E67E22") # 变橙色提示
-            self.btn_action.configure(text="RUN BENCHMARK / 跑分")
-            # 重置统计数据
+            self.show_toast("Benchmark Mode Activated / 基准测试模式已激活", "⚙️")
+            self.lbl_main_title.configure(text_color="#E67E22")
+            self.btn_action.configure(text="EXECUTE BENCHMARK / 执行基准测试")
             self.test_stats = {"orig": 0, "new": 0}
         else:
-            self.show_toast("已退出测试模式", "🛡️")
-            self.lbl_main_title.configure(text_color=COLOR_TEXT_MAIN) # 恢复颜色
-            self.btn_action.configure(text="COMPRESS / 压制")
+            self.show_toast("Benchmark Mode Deactivated / 基准测试模式已解除", "⚙️")
+            self.lbl_main_title.configure(text_color=COLOR_TEXT_MAIN)
+            self.btn_action.configure(text="START ENCODE / 启动编码")
 
     def detect_hardware_limit(self):
         """
@@ -1950,7 +1953,7 @@ class UltraEncoderApp(DnDWindow):
                  free_ram = get_free_ram_gb()
                  available = free_ram - SAFE_RAM_RESERVE
                  if available > file_size_gb: break 
-                 if wait_count == 0: self.safe_update(widget.set_status, "⏳ 等待内存...", COLOR_WAITING, STATUS_WAIT)
+                 if wait_count == 0: self.safe_update(widget.set_status, "Awaiting Memory Allocation / 等待内存分配", COLOR_WAITING, STATUS_WAIT)
                  if self.stop_flag: return False
                  time.sleep(0.5)
                  wait_count += 1
@@ -1962,7 +1965,7 @@ class UltraEncoderApp(DnDWindow):
             
             # 策略：RAM 充足时优先载入 RAM
             if available_for_cache > file_size_gb and file_size_gb < MAX_RAM_LOAD_GB:
-                self.safe_update(widget.set_status, "📥 载入内存中...", COLOR_RAM, STATUS_CACHING)
+                self.safe_update(widget.set_status, "Buffering to RAM / 缓冲至物理内存", COLOR_RAM, STATUS_CACHING)
                 self.safe_update(widget.set_progress, 0, COLOR_RAM)
                 try:
                     chunk_size = 64 * 1024 * 1024 
@@ -1981,7 +1984,7 @@ class UltraEncoderApp(DnDWindow):
                     token = str(uuid.uuid4().hex) 
                     GLOBAL_RAM_STORAGE[token] = data_buffer
                     PATH_TO_TOKEN_MAP[src_path] = token
-                    self.safe_update(widget.set_status, "就绪 (内存加速)", COLOR_READY_RAM, STATUS_READY)                    
+                    self.safe_update(widget.set_status, "Ready (RAM Cached) / 就绪 (内存缓存)", COLOR_READY_RAM, STATUS_READY)                    
                     self.safe_update(widget.set_progress, 1, COLOR_READY_RAM)
                     widget.source_mode = "RAM"
                     return True
@@ -1989,7 +1992,7 @@ class UltraEncoderApp(DnDWindow):
                     widget.clean_memory() # 内存分配失败回退
             
             # 策略：RAM 不足时尝试写入 SSD 缓存
-            self.safe_update(widget.set_status, "📥 写入缓存...", COLOR_SSD_CACHE, STATUS_CACHING)
+            self.safe_update(widget.set_status, "Writing Storage Cache / 写入存储缓存", COLOR_SSD_CACHE, STATUS_CACHING)
             self.safe_update(widget.set_progress, 0, COLOR_SSD_CACHE)
             try:
                 fname = os.path.basename(src_path)
@@ -2009,11 +2012,11 @@ class UltraEncoderApp(DnDWindow):
                 self.temp_files.add(cache_path)
                 widget.ssd_cache_path = cache_path
                 widget.source_mode = "SSD_CACHE"
-                self.safe_update(widget.set_status, "就绪 (缓存加速)", COLOR_SSD_CACHE, STATUS_READY)
+                self.safe_update(widget.set_status, "Ready (Storage Cached) / 就绪 (存储缓存)", COLOR_SSD_CACHE, STATUS_READY)
                 self.safe_update(widget.set_progress, 1, COLOR_SSD_CACHE)
                 return True
             except:
-                self.safe_update(widget.set_status, "缓存失败", COLOR_ERROR, STATUS_ERR)
+                self.safe_update(widget.set_status, "Cache Allocation Failed / 缓存分配失败", COLOR_ERROR, STATUS_ERR)
                 return False
         finally:
             if lock_obj: lock_obj.release()
@@ -2066,45 +2069,40 @@ class UltraEncoderApp(DnDWindow):
         self.kill_all_procs()
         self.btn_action.configure(text="正在停止...", state="disabled")
 
-    def reset_ui_state(self):
-        """恢复 UI 到初始空闲状态"""
+    def reset_ui_state(self) -> None:
+        """
+        恢复 UI 到初始空闲状态。
+        """
         if not self.winfo_exists(): return
         
-        # 恢复主按钮为蓝色 "压制" 功能
         self.btn_action.configure(
-            text="COMPRESS / 压制", 
+            text="START ENCODE / 启动编码", 
             fg_color=COLOR_ACCENT, 
             hover_color=COLOR_ACCENT_HOVER, 
             state="normal",
-            command=self.toggle_action # 恢复为开始功能
+            command=self.toggle_action 
         )
         
         self.lbl_run_status.configure(text="") 
         self.btn_clear.configure(state="normal")
-        
-        # 强制重置监控区域
         self.update_monitor_layout(force_reset=True)
 
-    def set_completion_state(self):
+    def set_completion_state(self) -> None:
         """
-        [PyArchitect Fix] 设置任务全部完成后的 UI 状态
-        修复: 任务完成后，显式启用 Reset 按钮，防止 UI 死胡同
+        设置任务全部完成后的 UI 状态。
         """
         if not self.winfo_exists(): return
         
-        # 1. 设置主按钮为绿色 "完成" 状态
         self.btn_action.configure(
-            text="DONE / 完成", 
+            text="EXECUTION FINISHED / 执行完成", 
             fg_color=COLOR_SUCCESS, 
             hover_color=COLOR_SUCCESS, 
             state="normal",
-            command=self.reset_ui_state # 点击变成重置功能
+            command=self.reset_ui_state
         )
         
-        # 2. [关键修复] 强制启用 Reset 按钮
         self.btn_clear.configure(state="normal")
-        
-        self.lbl_run_status.configure(text="✅ 队列处理完毕")
+        self.lbl_run_status.configure(text="Queue Execution Concluded / 队列执行完毕")
 
     def get_dur(self, path):
         """获取视频时长 (秒)"""
@@ -2325,13 +2323,13 @@ class UltraEncoderApp(DnDWindow):
         """线程任务：IO 预读取"""
         card = self.task_widgets[task_file]
         try:
-            self.safe_update(card.set_status, "📥正在加载...", COLOR_READING, STATE_CACHING)
+            self.safe_update(card.set_status, "Allocating I/O / 正在分配 I/O", COLOR_READING, STATE_CACHING)
             success = self.process_caching(task_file, card, lock_obj=None, no_wait=True)
             if success:
-                self.safe_update(card.set_status, "⚡就绪 (等待编码)", COLOR_READY_RAM if card.source_mode == "RAM" else COLOR_SSD_CACHE, STATE_READY)
-            else: self.safe_update(card.set_status, "IO 失败", COLOR_ERROR, STATE_ERROR)
+                self.safe_update(card.set_status, "Standby for Encoding / 编码待命", COLOR_READY_RAM if card.source_mode == "RAM" else COLOR_SSD_CACHE, STATE_READY)
+            else: self.safe_update(card.set_status, "I/O Failure / I/O 失败", COLOR_ERROR, STATE_ERROR)
         except Exception as e:
-            self.safe_update(card.set_status, "IO 错误", COLOR_ERROR, STATE_ERROR)
+            self.safe_update(card.set_status, "I/O Exception / I/O 异常", COLOR_ERROR, STATE_ERROR)
 
     def _worker_compute_task(self, task_file):
         """线程任务：视频编码计算 (PyArchitect Fixed: UUID Guard & Atomic State)"""
@@ -2367,7 +2365,7 @@ class UltraEncoderApp(DnDWindow):
             
         try:
             # 激活通道，传入 Token
-            self.safe_update(ch_ui.activate, fname, "⏳ 正在预处理 / Pre-processing...", task_token)
+            self.safe_update(ch_ui.activate, fname, "Initializing Pipeline / 初始化处理管线", task_token)
             
             if os.path.exists(task_file):
                 input_size = os.path.getsize(task_file)
@@ -2387,8 +2385,8 @@ class UltraEncoderApp(DnDWindow):
             except Exception: pass
 
             # 1. 提取音频
-            self.safe_update(ch_ui.activate, fname, "🎵 正在分离音频流 / Extracting Audio...", task_token)
-            self.safe_update(card.set_status, "🎵 提取音频...", COLOR_READING, STATE_ENCODING)
+            self.safe_update(ch_ui.activate, fname, "Demuxing Audio Stream / 解复用音频流", task_token)
+            self.safe_update(card.set_status, "Demuxing Audio / 音频解复用", COLOR_READING, STATE_ENCODING)
             has_audio = False
             
             extract_cmd = [FFMPEG_PATH, "-y", "-i", task_file, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", "-f", "wav", temp_audio_wav]
@@ -2397,7 +2395,7 @@ class UltraEncoderApp(DnDWindow):
             if audio_proc.returncode == 0 and os.path.exists(temp_audio_wav) and os.path.getsize(temp_audio_wav) > 1024: 
                 has_audio = True
 
-            self.safe_update(card.set_status, "▶️ 智能编码中...", COLOR_ACCENT, STATE_ENCODING)
+            self.safe_update(card.set_status, "Encoding in Progress / 编码进行中", COLOR_ACCENT, STATE_ENCODING)
             
             # 2. 构建编码命令 (逻辑保持不变，为节省篇幅省略中间构建 cmd 的代码，请保留原有的构建逻辑)
             # ... [此处保留原代码中构建 cmd 列表的逻辑] ...
@@ -2539,7 +2537,7 @@ class UltraEncoderApp(DnDWindow):
                                         if final_prog >= 0.98:
                                             # 删除 ratio 参数
                                             self.safe_update(ch_ui.update_data, fps, 0.99, "Finalizing...", task_token)
-                                            self.safe_update(card.set_status, "📦 封装中...", COLOR_ACCENT, STATE_ENCODING)
+                                            self.safe_update(card.set_status, "Multiplexing (Muxing) / 混流封装", COLOR_ACCENT, STATE_ENCODING)
                                             self.safe_update(card.set_progress, 0.99, COLOR_ACCENT)
                                         else:
                                             # 删除 ratio 参数
@@ -2561,10 +2559,10 @@ class UltraEncoderApp(DnDWindow):
                 except: pass
             
             if self.stop_flag:
-                self.safe_update(card.set_status, "已停止", COLOR_PAUSED, STATE_PENDING)
+                self.safe_update(card.set_status, "Process Terminated / 进程已终止", COLOR_PAUSED, STATE_PENDING)
             elif proc.returncode == 0:
                 # 成功分支
-                self.safe_update(card.set_status, "📦 搬运数据中...", COLOR_MOVING, STATE_DONE)
+                self.safe_update(card.set_status, "Relocating Output / 迁移输出文件", COLOR_MOVING, STATE_DONE)
                 
                 if self.test_mode:
                      # (测试模式代码简略)
@@ -2573,7 +2571,7 @@ class UltraEncoderApp(DnDWindow):
                      self.test_stats["new"] += new_s
                      try: os.remove(working_output_file)
                      except: pass
-                     self.safe_update(card.set_status, "✅ 测试完成", COLOR_SUCCESS, STATE_DONE)
+                     self.safe_update(card.set_status, "Benchmark Complete / 基准测试完成", COLOR_SUCCESS, STATE_DONE)
                      self.safe_update(card.set_progress, 1.0, COLOR_SUCCESS)
                 else:
                     if os.path.exists(working_output_file): 
@@ -2591,15 +2589,15 @@ class UltraEncoderApp(DnDWindow):
                     except: pass
                     
                     # [关键] 最终状态更新，覆盖之前的 "Finalizing"
-                    self.safe_update(card.set_status, f"完成 {ratio_str}", COLOR_SUCCESS, STATE_DONE)
+                    self.safe_update(card.set_status, f"Task Resolved / 任务已终结 {ratio_str}", COLOR_SUCCESS, STATE_DONE)
                     self.safe_update(card.set_progress, 1.0, COLOR_SUCCESS)
             else:
                 err_summary = "\n".join(list(log_buffer))
-                self.safe_update(card.set_status, "转码失败", COLOR_ERROR, STATE_ERROR)
+                self.safe_update(card.set_status, "Encoding Exception / 编码异常", COLOR_ERROR, STATE_ERROR)
                 
         except Exception as e:
             print(f"System Error: {e}")
-            self.safe_update(card.set_status, "系统错误", COLOR_ERROR, STATE_ERROR)
+            self.safe_update(card.set_status, "System Fault / 系统故障", COLOR_ERROR, STATE_ERROR)
         finally:
             # 清理全局缓存映射
             token = PATH_TO_TOKEN_MAP.get(task_file)
