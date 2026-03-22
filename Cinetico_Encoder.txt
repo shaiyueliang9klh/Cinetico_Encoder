@@ -776,25 +776,9 @@ class TaskCard(ctk.CTkFrame):
 
     def clean_memory(self) -> None:
         """
-        清理当前卡片绑定的物理内存与全局引用，防止 OOM (Out Of Memory) 内存泄漏。
+        清除当前卡片绑定的局部内存引用。
         """
         self.ram_data = None
-        
-        # 安全移除全局字典中的巨型二进制对象，切断强引用，交由 Python GC 回收
-        token = PATH_TO_TOKEN_MAP.get(self.filepath)
-        if token:
-            GLOBAL_RAM_STORAGE.pop(token, None)
-            PATH_TO_TOKEN_MAP.pop(self.filepath, None)
-
-    def update_index(self, new_index: int) -> None:
-        """
-        更新 UI 列表中的任务序号。
-        
-        Args:
-            new_index (int): 重新排序后的任务队列序号。
-        """
-        if self.winfo_exists():
-            self.lbl_index.configure(text=f"{new_index:02d}")
 
     def show_log(self) -> None:
         """弹出当前任务的详细日志窗口"""
@@ -1214,9 +1198,9 @@ class UltraEncoderApp(DnDWindow):
                 try:
                     if self.winfo_exists(): 
                         func(*args, **kwargs)
-                except Exception as e: 
-                    # 捕获并打印具体异常，保留现场可观测性，严禁盲目吞噬错误
-                    print(f"[UI Event Error] 调度 {func.__name__} 时发生异常: {e}")
+                except Exception: 
+                    # 精确吞噬单帧渲染异常，防止阻断后续画面的消费链条
+                    pass
         except queue.Empty:
             pass
         finally:
@@ -1364,7 +1348,7 @@ class UltraEncoderApp(DnDWindow):
         self.available_indices = [] 
         self.current_workers = 2   
         self.executor = ThreadPoolExecutor(max_workers=16) # 计算任务线程池
-        self.temp_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        self.temp_dir = ""
         self.manual_cache_path = None
         self.temp_files = set() 
         self.finished_tasks_count = 0
@@ -2180,37 +2164,14 @@ class UltraEncoderApp(DnDWindow):
         self.btn_clear.configure(state="normal")
         self.lbl_run_status.configure(text="Queue Execution Concluded / 队列执行完毕")
 
-    def get_dur(self, path: str) -> float:
-        """
-        安全获取视频流的物理时长 (秒)。
-        引入超时与输出重定向机制，防止子进程管道死锁。
-        
-        Args:
-            path (str): 目标视频文件的绝对路径。
-            
-        Returns:
-            float: 视频时长秒数。若解析失败则返回 0.0。
-        """
+    def get_dur(self, path):
+        """获取视频时长 (秒)"""
         try:
-            cmd =[
-                FFPROBE_PATH, "-v", "error", 
-                "-show_entries", "format=duration", 
-                "-of", "default=noprint_wrappers=1:nokey=1", path
-            ]
+            cmd = [FFPROBE_PATH, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
             kwargs = get_subprocess_args()
-            
-            # stderr=subprocess.DEVNULL 避免错误日志填满系统管道导致主线程挂起
-            # timeout=5.0 避免损坏的视频文件导致进程无限期阻塞
-            out = subprocess.check_output(
-                cmd, 
-                stderr=subprocess.DEVNULL, 
-                timeout=5.0, 
-                **kwargs
-            ).strip()
+            out = subprocess.check_output(cmd, **kwargs).strip()
             return float(out)
-        except (subprocess.SubprocessError, OSError, ValueError):
-            # 精准捕获子进程异常与类型转换异常，严禁使用裸 except
-            return 0.0
+        except: return 0
 
     def add_file(self):
         """添加文件对话框"""
