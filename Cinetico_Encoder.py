@@ -614,8 +614,17 @@ class MonitorChannel(ctk.CTkFrame):
         self.lbl_eta.configure(text_color=COLOR_SUCCESS)
         self.last_update_time = time.time()
 
-    def update_data(self, fps: float, prog: float, eta: str, task_uuid: str) -> None:
-        """更新通道实时数据"""
+    def update_data(self, fps: float, prog: float, eta: str, task_uuid: str, est_size: str = "") -> None:
+        """
+        更新通道实时数据
+        
+        Args:
+            fps: 当前处理帧率
+            prog: 0.0~1.0 的进度
+            eta: 剩余时间字符串
+            task_uuid: 安全锁标识
+            est_size: [新增] 预测的最终体积字符串
+        """
         if not self.winfo_exists() or getattr(self, 'current_task_uuid', None) != task_uuid: 
             return 
             
@@ -624,8 +633,12 @@ class MonitorChannel(ctk.CTkFrame):
         self.lbl_fps.configure(text=f"{float(fps):.1f}", text_color=COLOR_TEXT_MAIN) 
         self.lbl_prog.configure(text=f"{int(prog*100)}%")
         
-        # 智能判断：如果传入的 eta 已经是特殊状态词(如 Finalizing)，则直接显示
-        self.lbl_eta.configure(text=eta if "ETA" in eta or "Final" in eta else f"ETA: {eta}")
+        # [优化] 拼装 ETA 与 预期体积
+        display_text = eta if "ETA" in eta or "Final" in eta else f"ETA: {eta}"
+        if est_size and "Final" not in display_text:
+            display_text += f" | {est_size}"
+            
+        self.lbl_eta.configure(text=display_text)
 
     def reset(self) -> None:
         """重置通道为等待状态"""
@@ -677,10 +690,16 @@ class ToastNotification(ctk.CTkFrame):
     def destroy_toast(self):
         self.destroy()
 
+from collections import deque
+import customtkinter as ctk
+import os
+import platform
+import subprocess
+
 class TaskCard(ctk.CTkFrame):
     """
     任务列表项卡片。
-    显示文件名、状态、进度条。
+    显示文件名、状态、进度条，支持查看独立日志。
     """
     def __init__(self, master, index, filepath, **kwargs):
         super().__init__(master, fg_color=COLOR_CARD, corner_radius=10, border_width=0, **kwargs)
@@ -692,6 +711,9 @@ class TaskCard(ctk.CTkFrame):
         self.ssd_cache_path = None
         self.source_mode = "PENDING"
         self.ui_max_progress = 0.0
+        
+        # [新增] 为每个任务维护独立的日志缓冲区（保留最后2000行，防内存溢出）
+        self.log_data = deque(maxlen=2000)
         
         try: self.file_size_gb = os.path.getsize(filepath) / (1024**3)
         except: self.file_size_gb = 0.0
@@ -707,13 +729,22 @@ class TaskCard(ctk.CTkFrame):
         ctk.CTkLabel(name_frame, text=os.path.basename(filepath), font=("微软雅黑", 12, "bold"), 
                      text_color=COLOR_TEXT_MAIN, anchor="w").pack(side="left")
         
-        # 打开文件夹按钮 (根据主题适配背景色)
+        # 按钮区容器
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.grid(row=0, column=2, padx=10, pady=(8,0), sticky="e")
+        
         btn_bg = ("#E0E0E0", "#444444")
         btn_hover = ("#D0D0D0", "#555555")
-        self.btn_open = ctk.CTkButton(self, text="📂", width=28, height=22, fg_color=btn_bg, hover_color=btn_hover, 
-                                      text_color=COLOR_TEXT_MAIN,
-                                      font=("Segoe UI Emoji", 11), command=self.open_location)
-        self.btn_open.grid(row=0, column=2, padx=10, pady=(8,0), sticky="e")
+        
+        # [新增] 查看日志按钮
+        self.btn_log = ctk.CTkButton(btn_frame, text="📄", width=28, height=22, fg_color=btn_bg, hover_color=btn_hover, 
+                                     text_color=COLOR_TEXT_MAIN, font=("Segoe UI Emoji", 11), command=self.show_log)
+        self.btn_log.pack(side="left", padx=(0, 5))
+
+        # 打开文件夹按钮
+        self.btn_open = ctk.CTkButton(btn_frame, text="📂", width=28, height=22, fg_color=btn_bg, hover_color=btn_hover, 
+                                      text_color=COLOR_TEXT_MAIN, font=("Segoe UI Emoji", 11), command=self.open_location)
+        self.btn_open.pack(side="left")
         
         # 状态文本
         self.lbl_status = ctk.CTkLabel(self, text="等待处理", font=("Arial", 10), text_color=COLOR_TEXT_HINT, anchor="nw")
@@ -721,55 +752,25 @@ class TaskCard(ctk.CTkFrame):
         
         # 进度条
         self.progress = ctk.CTkProgressBar(self, height=6, corner_radius=3, progress_color=COLOR_ACCENT)
-        self.progress.configure(fg_color=("#E0E0E0", "#444444")) # 进度槽底色
+        self.progress.configure(fg_color=("#E0E0E0", "#444444")) 
         self.progress.set(0)
         self.progress.grid(row=2, column=0, columnspan=3, sticky="new", padx=12, pady=(0, 10))
         self.final_output_path = None
 
-    def open_location(self):
-        """调用系统资源管理器定位文件"""
-        try: 
-            if platform.system() == "Windows":
-                subprocess.run(['explorer', '/select,', os.path.normpath(self.filepath)])
-            elif platform.system() == "Darwin":
-                subprocess.run(['open', '-R', self.filepath])
-        except Exception: pass
-
-    def update_index(self, new_index):
-        try:
-            if self.winfo_exists(): self.lbl_index.configure(text=f"{new_index:02d}")
-        except: pass
+    def show_log(self) -> None:
+        """弹出当前任务的详细日志窗口"""
+        log_win = ctk.CTkToplevel(self)
+        log_win.title(f"日志诊断 - {os.path.basename(self.filepath)}")
+        log_win.geometry("700x500")
+        log_win.transient(self.winfo_toplevel())
         
-    def set_status(self, text, color="#888", code=None):
-        """更新状态文字与内部状态码"""
-        try:
-            if self.winfo_exists():
-                self.lbl_status.configure(text=text, text_color=color)
-                if code is not None: 
-                    self.status_code = code
-                    # 如果状态重置，清理进度锁
-                    if code in [STATE_ENCODING, STATE_PENDING, STATE_DONE]:
-                        self.ui_max_progress = 0.0
-        except: pass
+        txt = ctk.CTkTextbox(log_win, font=("Consolas", 12), wrap="none", fg_color=("#FFFFFF", "#1E1E1E"))
+        txt.pack(fill="both", expand=True, padx=10, pady=10)
         
-    def set_progress(self, val, color=COLOR_ACCENT):
-        """设置进度条（带单向递增锁，防止进度回跳）"""
-        try:
-            if self.winfo_exists():
-                if val == 0: self.ui_max_progress = 0.0
-                elif val >= 1.0: self.ui_max_progress = 1.0
-                elif val < self.ui_max_progress: return 
-                
-                if val > self.ui_max_progress: self.ui_max_progress = val
-                self.progress.set(self.ui_max_progress)
-                self.progress.configure(progress_color=color)
-        except: pass
-        
-    def clean_memory(self):
-        """清理内部状态"""
-        self.source_mode = "PENDING"
-        self.ssd_cache_path = None
-        self.ui_max_progress = 0.0
+        # 将日志队列合并为文本并插入
+        full_log = "\n".join(self.log_data) if self.log_data else "暂无日志产生..."
+        txt.insert("1.0", full_log)
+        txt.configure(state="disabled") # 只读模式
 
 # =========================================================================
 # [Module 3.5] Help Window (Ported from v0.9.6 & Optimized)
@@ -2549,15 +2550,19 @@ class UltraEncoderApp(DnDWindow):
             start_t = time.time()
             last_ui_update_time = 0 
             max_prog_reached = 0.0   
-            is_finished_locally = False # [关键] 本地原子锁
+            is_finished_locally = False 
+            
+            # [关键] 清空上次的日志缓存
+            card.log_data.clear()
 
             for line in proc.stdout:
                 if self.stop_flag or is_finished_locally: break
                 try: 
-                    # 流式迭代，规避 readline() 在无换行符时导致的永久挂起
                     line_str = line.strip() 
                     if not line_str: continue
-                    log_buffer.append(line_str)
+                    
+                    # [新增] 实时写入卡片专有日志
+                    card.log_data.append(line_str)
                     
                     if "=" in line_str:
                         parts = line_str.split("=", 1)
@@ -2574,7 +2579,7 @@ class UltraEncoderApp(DnDWindow):
                                     
                                     raw_prog = (current_us / 1000000.0) / duration
                                     if raw_prog > max_prog_reached: max_prog_reached = raw_prog
-                                    final_prog = min(0.99, max_prog_reached) # 封顶 99%
+                                    final_prog = min(0.99, max_prog_reached) 
                                     
                                     eta = "--:--"
                                     elapsed = now - start_t
@@ -2583,16 +2588,26 @@ class UltraEncoderApp(DnDWindow):
                                         if eta_sec < 0: eta_sec = 0
                                         eta = f"{int(eta_sec//60):02d}:{int(eta_sec%60):02d}"
                                     
-                                    # [关键] 更新时必须传入 task_token，并检查本地锁
+                                    # [新增] 核心数学逻辑：动态预测最终体积
+                                    est_size_str = ""
+                                    if final_prog > 0.05: # 进度大于 5% 后预测才趋于准确
+                                        raw_size = progress_stats.get("total_size", "0").replace("N/A", "0")
+                                        try:
+                                            current_size_bytes = int(raw_size)
+                                            if current_size_bytes > 0:
+                                                est_mb = (current_size_bytes / final_prog) / (1024 * 1024)
+                                                est_size_str = f"Est: {est_mb:.1f}MB"
+                                        except ValueError:
+                                            pass
+                                    
                                     if not is_finished_locally:
                                         if final_prog >= 0.98:
-                                            # 删除 ratio 参数
-                                            self.safe_update(ch_ui.update_data, fps, 0.99, "Finalizing...", task_token)
-                                            self.safe_update(card.set_status, "Multiplexing (Muxing) / 混流封装", COLOR_ACCENT, STATE_ENCODING)
+                                            self.safe_update(ch_ui.update_data, fps, 0.99, "Finalizing...", task_token, "")
+                                            self.safe_update(card.set_status, "📦 封装中...", COLOR_ACCENT, STATE_ENCODING)
                                             self.safe_update(card.set_progress, 0.99, COLOR_ACCENT)
                                         else:
-                                            # 删除 ratio 参数
-                                            self.safe_update(ch_ui.update_data, fps, final_prog, eta, task_token)
+                                            # [修改] 将预测体积传给监控通道
+                                            self.safe_update(ch_ui.update_data, fps, final_prog, eta, task_token, est_size_str)
                                             self.safe_update(card.set_progress, final_prog, COLOR_ACCENT)
                                     
                                     last_ui_update_time = now
