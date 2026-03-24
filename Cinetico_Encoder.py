@@ -787,14 +787,21 @@ class TaskCard(ctk.CTkFrame):
     def clean_memory(self) -> None:
         """
         清理当前卡片绑定的物理内存与全局引用，防止 OOM (Out Of Memory) 内存泄漏。
+        [PyArchitect Fix] 引入深度清空与强制系统级内存回收。
         """
         self.ram_data = None
         
-        # 安全移除全局字典中的巨型二进制对象，切断强引用，交由 Python GC 回收
+        # 安全移除全局字典中的巨型二进制对象，切断强引用
         token = PATH_TO_TOKEN_MAP.get(self.filepath)
         if token:
-            GLOBAL_RAM_STORAGE.pop(token, None)
+            data_list = GLOBAL_RAM_STORAGE.pop(token, None)
+            if isinstance(data_list, list):
+                data_list.clear() # 释放内部 chunk 引用
             PATH_TO_TOKEN_MAP.pop(self.filepath, None)
+            
+        # 如果释放了大量内存，立即踢醒垃圾回收器，交还 OS 物理内存
+        import gc
+        gc.collect()
 
     def update_index(self, new_index: int) -> None:
         """
@@ -1976,9 +1983,16 @@ class UltraEncoderApp(DnDWindow):
         self.temp_files.clear()
         self.active_procs.clear()
         
-        # [PyArchitect Fix] 强制清空全局 RAM 缓存，切断幽灵引用，触发底层 GC 垃圾回收
+        # [PyArchitect Fix] 暴力解构链表并强制触发底层 GC 垃圾回收，逼迫 Python 释放物理内存给 OS
+        for token in list(GLOBAL_RAM_STORAGE.keys()):
+            data_list = GLOBAL_RAM_STORAGE.get(token)
+            if isinstance(data_list, list):
+                data_list.clear() # 深度击碎 64MB 内存块的连续指针
         GLOBAL_RAM_STORAGE.clear()
         PATH_TO_TOKEN_MAP.clear()
+        
+        import gc
+        gc.collect() # 强制执行全量垃圾回收 (Full Collection)
         
         # 6. 重置 UI 视觉
         self.check_placeholder()
