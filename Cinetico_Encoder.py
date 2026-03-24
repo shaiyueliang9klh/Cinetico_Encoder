@@ -2563,12 +2563,20 @@ class UltraEncoderApp(DnDWindow):
         # 用于崩溃时回溯日志
         log_buffer = deque(maxlen=30)
         
-        # 获取显示槽位
-        with self.slot_lock:
-            if self.available_indices:
-                slot_idx = self.available_indices.pop(0)
-                if slot_idx < len(self.monitor_slots): ch_ui = self.monitor_slots[slot_idx]
-        
+        # [PyArchitect Fix] 引入自旋等待机制，解决多线程任务交接时的槽位抢占竞态条件 (Race Condition)
+        # 确保当前一个任务刚更新完 DONE 状态但尚未归还槽位时，新任务会短暂等待，防止退化为静默后台执行
+        retry_count = 50 
+        while retry_count > 0:
+            with self.slot_lock:
+                if self.available_indices:
+                    self.available_indices.sort() # 优先取最小的可用索引，维持自上而下的视觉顺序
+                    slot_idx = self.available_indices.pop(0)
+                    if slot_idx < len(self.monitor_slots): 
+                        ch_ui = self.monitor_slots[slot_idx]
+                    break
+            time.sleep(0.1) # 让出 CPU 时间片，等待上一个线程交接槽位
+            retry_count -= 1
+
         # 兜底 UI 对象，防止 ch_ui 为空导致崩溃
         if not ch_ui: 
             class DummyUI: 
@@ -2843,9 +2851,9 @@ class UltraEncoderApp(DnDWindow):
                 except: pass
             
             self.safe_update(ch_ui.reset)
-            # [关键] 归还显示槽位，确保下个任务有窗口可用
+            # [关键] 归还显示槽位，确保下个任务有窗口可用 (附带防重复归还校验)
             with self.slot_lock:
-                if slot_idx != -1:
+                if slot_idx != -1 and slot_idx not in self.available_indices:
                     self.available_indices.append(slot_idx)
                     self.available_indices.sort()
 
