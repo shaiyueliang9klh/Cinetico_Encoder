@@ -244,8 +244,8 @@ def get_free_ram_gb():
         return 4.0
 
 # 内存缓存策略配置
-MAX_RAM_LOAD_GB = 12.0  # 最大内存占用限制
-SAFE_RAM_RESERVE = 3.0  # 保留给系统的最小安全内存
+MAX_RAM_LOAD_GB = 48.0  # 最大内存占用限制
+SAFE_RAM_RESERVE = 6.0  # 保留给系统的最小安全内存
 
 # --- 拖拽功能兼容处理 ---
 try:
@@ -422,23 +422,33 @@ GLOBAL_RAM_STORAGE = {}
 PATH_TO_TOKEN_MAP = {}
 
 class GlobalRamHandler(http.server.SimpleHTTPRequestHandler):
-    """自定义 HTTP 处理器，用于流式传输内存数据"""
-    def log_message(self, format, *args): pass  # 禁用控制台日志
+    """自定义 HTTP 处理器，支持高并发分块链表传输，彻底解决超大内存对象的分配崩溃"""
+    def log_message(self, format, *args): pass  
     
     def do_GET(self):
         try:
             token = self.path.lstrip('/')
-            video_data = GLOBAL_RAM_STORAGE.get(token)
-            if not video_data:
+            video_data_chunks = GLOBAL_RAM_STORAGE.get(token) # 现在获取到的是一个 list[bytes]
+            if not video_data_chunks:
                 self.send_error(404)
                 return
+                
+            # 计算总长度
+            total_length = sum(len(chunk) for chunk in video_data_chunks)
+            
             self.send_response(200)
             self.send_header("Content-Type", "video/mp4") 
-            self.send_header("Content-Length", str(len(video_data)))
+            self.send_header("Content-Length", str(total_length))
             self.end_headers()
-            try: self.wfile.write(video_data)
-            except (ConnectionResetError, BrokenPipeError): pass
-        except Exception: pass
+            
+            # [PyArchitect Fix] 流式向 Socket 吐出数据块，内存零拷贝
+            try: 
+                for chunk in video_data_chunks:
+                    self.wfile.write(chunk)
+            except (ConnectionResetError, BrokenPipeError): 
+                pass
+        except Exception: 
+            pass
 
 def start_global_server():
     """启动本地回环 HTTP 服务器（安全加固版）"""
@@ -2094,19 +2104,21 @@ class UltraEncoderApp(DnDWindow):
                 self.safe_update(widget.set_status, "Buffering to RAM / 缓冲至物理内存", COLOR_RAM, STATUS_CACHING)
                 self.safe_update(widget.set_progress, 0, COLOR_RAM)
                 try:
-                    chunk_size = 64 * 1024 * 1024 
-                    data_buffer = bytearray()
+                    chunk_size = 64 * 1024 * 1024  # 64MB 切片
+                    data_buffer = []               # [PyArchitect Fix] 改用 List 存储，彻底消除连续内存碎片化引发的 MemoryError
                     read_len = 0
+                    
                     with open(src_path, 'rb') as f:
                         while True:
                             if self.stop_flag: return False
                             chunk = f.read(chunk_size)
                             if not chunk: break
-                            data_buffer.extend(chunk) 
+                            data_buffer.append(chunk) # 以独立的内存页追加，而非扩展连续指针
                             read_len += len(chunk)
                             if file_size > 0:
                                 prog = read_len / file_size
                                 self.safe_update(widget.set_progress, prog, COLOR_READING)
+                                
                     token = str(uuid.uuid4().hex) 
                     GLOBAL_RAM_STORAGE[token] = data_buffer
                     PATH_TO_TOKEN_MAP[src_path] = token
@@ -2114,7 +2126,8 @@ class UltraEncoderApp(DnDWindow):
                     self.safe_update(widget.set_progress, 1, COLOR_READY_RAM)
                     widget.source_mode = "RAM"
                     return True
-                except Exception: 
+                except Exception as e: 
+                    print(f"[RAM Allocation Error] {e}")
                     widget.clean_memory() # 内存分配失败回退
             
             # 策略：RAM 不足时尝试写入 SSD 缓存
