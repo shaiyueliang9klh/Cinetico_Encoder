@@ -1637,15 +1637,42 @@ class UltraEncoderApp(DnDWindow):
         else:
             self.stop()
 
-    def get_quality_analysis(self, value):
-        """根据 CRF 值返回可视化的质量描述"""
+    def get_quality_analysis(self, value: float, codec: str = "H.264") -> str:
+        """
+        [PyArchitect Refactored] 具备编码器上下文感知的画质评估器。
+        将当前数值逆向归一化到 H.264 基准，以确保语义评价的准确性。
+        """
         val = int(value)
-        if val <= 17: return "💎 极高画质 / Archival (体积极大)"
-        elif val <= 20: return "✨ 高保真 / High Quality (适合收藏)"
-        elif val <= 24: return "⚖️ 标准 / Balanced (默认推荐)"
-        elif val <= 28: return "📱 紧凑 / Compact (适合分享)"
-        elif val <= 33: return "💾 低码率 / Low Bitrate (节省空间)"
-        else: return "🧱 预览级 / Proxy (马赛克严重)"
+        offsets = {"H.264": 0, "H.265": 2, "AV1": 12}
+        normalized_val = val - offsets.get(codec, 0)
+
+        if normalized_val <= 17: return "💎 Archival / 极高画质 (体积极大)"
+        elif normalized_val <= 20: return "✨ High Fidelity / 高保真 (适合收藏)"
+        elif normalized_val <= 24: return "⚖️ Balanced / 标准平衡 (默认推荐)"
+        elif normalized_val <= 28: return "📱 Compact / 紧凑分布 (适合分享)"
+        elif normalized_val <= 33: return "💾 Low Bitrate / 低码率 (节省空间)"
+        else: return "🧱 Proxy / 预览代理 (画质损耗)"
+
+    def _on_codec_change(self, new_codec: str) -> None:
+        """
+        处理编码器切换时的动态标尺映射，维持同等画质的视觉基准。
+        """
+        offsets = {"H.264": 0, "H.265": 2, "AV1": 12}
+        old_codec = getattr(self, "last_codec", "H.264")
+        if old_codec == new_codec: 
+            return
+
+        current_val = self.crf_var.get()
+        # 剥离旧编码器的偏移量，加上新编码器的偏移量
+        base_val = current_val - offsets.get(old_codec, 0)
+        new_val = base_val + offsets.get(new_codec, 0)
+
+        # 限制在合法的 FFmpeg 量化范围内
+        new_val = max(10, min(51, new_val))
+
+        self.crf_var.set(new_val)
+        self.last_codec = new_codec
+        self.lbl_quality_stats.configure(text=self.get_quality_analysis(new_val, new_codec))
 
     def setup_ui(self, default_worker="2"):
         """构建主界面 UI 布局"""
@@ -1843,9 +1870,11 @@ class UltraEncoderApp(DnDWindow):
         
         def on_slider_change(value):
             self.crf_var.set(int(value))
-            self.lbl_quality_stats.configure(text=self.get_quality_analysis(value))
+            # 传入当前的编码器上下文
+            self.lbl_quality_stats.configure(text=self.get_quality_analysis(value, self.codec_var.get()))
 
-        self.slider = ctk.CTkSlider(c_box, from_=16, to=40, variable=self.crf_var, 
+        # [PyArchitect Fix] 扩容量化参数物理极限，适配 AV1 特性
+        self.slider = ctk.CTkSlider(c_box, from_=10, to=51, variable=self.crf_var, 
                                   height=20, progress_color=COLOR_ACCENT,
                                   command=on_slider_change) 
         self.slider.pack(side="left", fill="x", expand=True, padx=(0, 10))
@@ -1856,14 +1885,18 @@ class UltraEncoderApp(DnDWindow):
         
         self.lbl_quality_stats = ctk.CTkLabel(row2, text="", font=("微软雅黑", 11), anchor="w", text_color=COLOR_TEXT_HINT)
         self.lbl_quality_stats.pack(fill="x", pady=(2, 0))
-        self.lbl_quality_stats.configure(text=self.get_quality_analysis(self.crf_var.get()))
+        self.lbl_quality_stats.configure(text=self.get_quality_analysis(self.crf_var.get(), self.codec_var.get()))
         
         # 编码格式
         row1 = ctk.CTkFrame(l_btm, fg_color="transparent")
         row1.pack(fill="x", pady=ROW_SPACING, padx=UNIFIED_PAD_X)
         ctk.CTkLabel(row1, text="CODEC / 编码格式", font=btn_font, text_color=COLOR_TEXT_MAIN).pack(anchor="w", pady=(0,3))
+        
+        # [PyArchitect Fix] 初始化状态跟踪，并绑定动态映射回调
+        self.last_codec = "H.264"
         self.seg_codec = ctk.CTkSegmentedButton(row1, values=["H.264", "H.265", "AV1"], variable=self.codec_var, 
                                                 selected_color=COLOR_ACCENT, corner_radius=8, height=30, 
+                                                command=self._on_codec_change,
                                                 text_color=seg_text_color, selected_hover_color=COLOR_ACCENT_HOVER, unselected_hover_color=seg_unselected_hover)
         self.seg_codec.pack(fill="x")
         
@@ -2587,13 +2620,8 @@ class UltraEncoderApp(DnDWindow):
             use_10bit = self.depth_10bit_var.get()
             if final_hw_encode and "H.264" in codec_sel and use_10bit: use_10bit = False 
 
-            # [PyArchitect Fix] 动态量化参数补偿 (Dynamic QP Compensation)
-            # 不同编码器的量化标尺不通用。AV1 需要更高的数值才能达到与 H.264 相同的压缩基准。
+            # [PyArchitect Fix] 贯彻 WYSIWYG 原则，直接透传前端已处理好的物理映射值
             target_crf = self.crf_var.get()
-            if "AV1" in codec_sel:
-                target_crf += 12  # 算法硬补偿：将 UI 设定的 28 映射为底层的 40
-            elif "H.265" in codec_sel:
-                target_crf += 2   # HEVC 微调补偿
 
             if final_hw_encode:
                 if platform.system() == "Darwin":
