@@ -612,24 +612,12 @@ class MonitorChannel(ctk.CTkFrame):
             
         self.after(500, self._heartbeat)
 
-    def activate(self, filename: str, tag: str, task_uuid: str) -> None:
-        """
-        激活监控通道并绑定任务令牌。
-        [PyArchitect Fix] 修复了过度截断文件名的视觉缺陷，引入智能首尾保留算法。
-        """
+    def activate(self, filename, tag, task_uuid): # [修改] 新增 task_uuid 参数
         if not self.winfo_exists(): return
-        self.current_task_uuid = task_uuid 
+        self.current_task_uuid = task_uuid # [关键] 绑定当前任务令牌
         self.is_active = True
         self.scope.clear()
-        
-        # [核心逻辑] 智能字符串截断：当文件名超过 36 个字符时，保留前 24 个字符和后 8 个字符
-        # 既能充分利用 UI 横向空间，又能确保右侧的 Tag 文本不会被挤出边界
-        if len(filename) > 36:
-            display_name = f"{filename[:24]}...{filename[-8:]}"
-        else:
-            display_name = filename
-            
-        self.lbl_title.configure(text=f"Active / 运行中: {display_name}", text_color=COLOR_ACCENT)
+        self.lbl_title.configure(text=f"运行中: {filename[:10]}...", text_color=COLOR_ACCENT)
         self.lbl_info.configure(text=tag, text_color=COLOR_TEXT_HINT)
         self.lbl_fps.configure(text_color=COLOR_TEXT_MAIN)
         self.lbl_prog.configure(text_color=COLOR_ACCENT)
