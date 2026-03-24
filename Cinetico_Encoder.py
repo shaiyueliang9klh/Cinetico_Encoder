@@ -2193,12 +2193,15 @@ class UltraEncoderApp(DnDWindow):
                 if card.status_code == STATE_DONE: 
                     self.finished_tasks_count += 1
                 else:
-                    card.set_status("等待处理", COLOR_TEXT_HINT, STATUS_WAIT)
-                    card.set_progress(0)
+                    card.set_status("Pending / 等待处理", COLOR_TEXT_HINT, STATUS_WAIT)
+                    # [PyArchitect Fix] 补齐缺失的 color 参数，使用系统强调色作为重置后的默认色彩
+                    card.set_progress(0.0, COLOR_ACCENT)
                     card.clean_memory() 
                     if card.ssd_cache_path and os.path.exists(card.ssd_cache_path):
-                        try: os.remove(card.ssd_cache_path)
-                        except: pass
+                        try: 
+                            os.remove(card.ssd_cache_path)
+                        except OSError: 
+                            pass # 忽略底层文件系统级别的删除异常
                     card.ssd_cache_path = None
                     card.source_mode = "PENDING"
         
