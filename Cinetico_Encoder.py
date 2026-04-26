@@ -2628,10 +2628,15 @@ class UltraEncoderApp(DnDWindow):
             if force_cpu_decode and platform.system() == "Windows": allow_hw_decode_input = False
             final_hw_encode = using_gpu
             
+            # --- 构建物理与虚拟输入源 ---
             input_video_source = task_file
+            is_network_stream = False
+
             if not using_gpu and card.source_mode == "RAM":
                 token = PATH_TO_TOKEN_MAP.get(task_file)
-                if token: input_video_source = f"http://127.0.0.1:{self.global_port}/{token}"
+                if token: 
+                    input_video_source = f"http://127.0.0.1:{self.global_port}/{token}"
+                    is_network_stream = True
             elif card.source_mode == "SSD_CACHE" and card.ssd_cache_path:
                 input_video_source = os.path.abspath(card.ssd_cache_path)
 
@@ -2641,14 +2646,30 @@ class UltraEncoderApp(DnDWindow):
             working_output_file = os.path.join(self.temp_dir, f"TEMP_ENC_{uuid.uuid4().hex}.mp4")
 
             cmd = [FFMPEG_PATH, "-y"]
+            
             if allow_hw_decode_input:
                 if platform.system() == "Darwin": cmd.extend(["-hwaccel", "videotoolbox"])
                 else: cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
-            if not using_gpu and card.source_mode == "RAM": cmd.extend(["-probesize", "50M", "-analyzeduration", "100M"])
+                
+            # 为 HTTP 内存流增加充足的探测缓冲，防止由于丢包或握手延迟引发的提前 EOF
+            if is_network_stream: 
+                cmd.extend(["-probesize", "100M", "-analyzeduration", "100M"])
+                
+            # 添加主输入 (通常是高带宽的内存 HTTP 流 或 高速 SSD 缓存)
             cmd.extend(["-i", input_video_source])
-            if has_audio: cmd.extend(["-i", temp_audio_wav])
-            cmd.extend(["-map", "0:v:0"])
-            if has_audio: cmd.extend(["-map", "1:a:0"])
+
+            # [PyArchitect Fix] 异构双输入分离架构 (Dual-Input Stream Separation)
+            if has_audio and is_network_stream:
+                # 核心策略：当主视频流为不支持随机访问的 HTTP 内存流时，强行在同一流中解复用音视频会导致 FFmpeg 缓冲死锁
+                # 解决方案：将原物理文件作为 Input 1 单独引入，利用极低的硬盘 I/O 专职提取音频
+                cmd.extend(["-i", task_file])
+                cmd.extend(["-map", "0:v:0"])  # 从内存流读取画面
+                cmd.extend(["-map", "1:a:0"])  # 从物理硬盘读取声音
+            else:
+                # 若为纯本地文件直读 (DIRECT) 或 SSD 缓存，文件系统本身支持高速随机访问 (Seek)，直接正常映射双轨
+                cmd.extend(["-map", "0:v:0"])
+                if has_audio: 
+                    cmd.extend(["-map", "0:a:0"])
             
             # 编码器选择部分 (保留原逻辑)
             if final_hw_encode:
