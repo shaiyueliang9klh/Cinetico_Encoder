@@ -2582,17 +2582,27 @@ class UltraEncoderApp(DnDWindow):
                 duration = self.get_dur(task_file)
                 if duration <= 0: duration = 1.0
 
-            # --- 像素格式预检 (防止 4:2:2 炸显卡) ---
+            # --- 像素格式与编码预检 (防卫性编程：防止硬件解码器崩溃) ---
             force_cpu_decode = False
             try:
-                probe_cmd = [
+                # [PyArchitect Fix] 同时探测 codec_name 和 pix_fmt
+                probe_cmd: list[str] = [
                     FFPROBE_PATH, "-v", "error", "-select_streams", "v:0", 
-                    "-show_entries", "stream=pix_fmt", "-of", "csv=p=0", task_file
+                    "-show_entries", "stream=codec_name,pix_fmt", "-of", "csv=p=0", task_file
                 ]
-                pixel_format_info = subprocess.check_output(probe_cmd, **get_subprocess_args()).decode().strip()
-                if "422" in pixel_format_info: 
+                
+                # 获取流信息，预期输出格式如 "h264,yuv420p10le"
+                probe_info: str = subprocess.check_output(probe_cmd, **get_subprocess_args()).decode().strip().lower()
+                
+                # 触发软解回退 (CPU Decode) 的边界条件：
+                # 1. 包含 422 或 444 色度采样的视频
+                # 2. 编码格式为 h264 且位深为 10-bit 的视频 (如 High 10 Profile)
+                if "422" in probe_info or "444" in probe_info or ("h264" in probe_info and "10" in probe_info): 
                     force_cpu_decode = True
-            except Exception: pass
+                    
+            except subprocess.SubprocessError as e:
+                # 捕获具体的子进程异常，避免裸 except 掩盖其他核心系统级错误
+                print(f"[FFprobe 预检异常] 无法探测视频信息: {e}")
 
             # 1. 提取音频
             self.safe_update(ch_ui.activate, fname, "Demuxing Audio Stream / 解复用音频流", task_token)
