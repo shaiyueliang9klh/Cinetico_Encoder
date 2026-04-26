@@ -2648,8 +2648,12 @@ class UltraEncoderApp(DnDWindow):
             cmd = [FFMPEG_PATH, "-y"]
             
             if allow_hw_decode_input:
-                if platform.system() == "Darwin": cmd.extend(["-hwaccel", "videotoolbox"])
-                else: cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+                if platform.system() == "Darwin": 
+                    cmd.extend(["-hwaccel", "videotoolbox"])
+                else: 
+                    # [PyArchitect Fix] 限制硬件解码器的 CPU 喂送线程数。
+                    # 防止由于高核心 CPU 在处理高帧率视频时，向 NVDEC 申请超过 32 个 Decode Surfaces 而导致显存池溢出崩溃。
+                    cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-threads", "4"])
                 
             # 为 HTTP 内存流增加充足的探测缓冲，防止由于丢包或握手延迟引发的提前 EOF
             if is_network_stream: 
